@@ -4,10 +4,12 @@ Agent Orchestrator — Main CLI Entrypoint.
 Wires all layers and runs the interactive CLI loop.
 """
 
+import argparse
+import json
 import logging
 import sys
-
-logger = logging.getLogger(__name__)
+import os
+import asyncio
 
 from rich.console import Console
 from rich.panel import Panel
@@ -17,27 +19,28 @@ from rich import box
 
 from entry.cli import CLIAdapter
 from conversation.manager import ConversationManager
-from intent.adapter import IntentAdapter, FINANCE_CAPABILITIES
+from intent.adapter import IntentAdapter
 from planner.service import PlannerService
 from execution.engine import ExecutionEngine
 from orchestrator.orchestrator import Orchestrator
 from registry.domain_registry import HandlerRegistry
-from domains.finance.handler import FinanceDomainHandler
-from domains.general.handler import GeneralDomainHandler
+from registry.db import RegistryDB
+from registry.loader import RegistryLoader
 from skills.gateway import SkillGateway
 from skills.registry import SkillRegistry
 from skills.implementations.mcp_adapter import MCPAdapter
 from models.selector import ModelSelector
 
-import os
-
 # ─── Configuration ──────────────────────────────────────────────
 
+logger = logging.getLogger(__name__)
+
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_INTENT_MODEL = "llama3.1:8b"       # Fast model for intent extraction (JSON)
-OLLAMA_CHAT_MODEL = "qwen2.5-coder:32b"   # Full model for general conversation
+OLLAMA_INTENT_MODEL = "llama3.1:8b"
+OLLAMA_CHAT_MODEL = "qwen2.5-coder:32b"
 MCP_URL = os.getenv("MCP_URL", "http://localhost:8000/sse")
-DB_PATH = "conversations.db"
+DB_PATH = os.getenv("DB_PATH", "agent.db")
+REGISTRY_DB_PATH = os.getenv("REGISTRY_DB_PATH", "registry.db")
 LOG_LEVEL = logging.INFO
 
 # ─── Rich Console ───────────────────────────────────────────────
@@ -70,31 +73,44 @@ def preload_models() -> None:
 
 
 def build_pipeline() -> tuple[CLIAdapter, ConversationManager, IntentAdapter, PlannerService, ExecutionEngine]:
-    """Wire all layers together."""
+    """Wire all layers together using Dynamic Registry."""
     # Shared
     model_selector = ModelSelector(ollama_url=OLLAMA_URL)
 
-    # Skills
+    # Skills (still needed for local domains)
     mcp_adapter = MCPAdapter(mcp_url=MCP_URL)
     skill_registry = SkillRegistry()
     skill_registry.register("mcp_finance", mcp_adapter)
     skill_gateway = SkillGateway(skill_registry)
 
-    # Domains
-    finance_handler = FinanceDomainHandler(skill_gateway=skill_gateway)
-    general_handler = GeneralDomainHandler(model_selector=model_selector, model_name=OLLAMA_CHAT_MODEL)
-    domain_registry = HandlerRegistry()
-    domain_registry.register_domain("finance", finance_handler)
-    domain_registry.register_domain("general", general_handler)
+    # Context for Local Handlers
+    loader_context = {
+        "skill_gateway": skill_gateway,
+        "model_selector": model_selector
+    }
 
-    # Register capabilities
-    domain_registry.register_capability("chat", general_handler)
-    for cap in FINANCE_CAPABILITIES:
-        domain_registry.register_capability(cap, finance_handler)
+    # Dynamic Registry
+    db = RegistryDB(db_path=REGISTRY_DB_PATH)
+    runtime_registry = HandlerRegistry()
+    loader = RegistryLoader(db, runtime_registry)
+
+    # Ensure local defaults exist (Seed/Update local domains and capabilities)
+    logger.info("Syncing local domain defaults...")
+    loader.sync_local_to_db()
+        # Initial capability sync for local is manual/hardcoded in loader for now,
+        # or we rely on intent adapter to know them.
+        # Ideally, local handlers should describe themselves too, but for now we assume they are safe.
+
+    # Load All Domains
+    loader.load_all(loader_context)
 
     # Core
-    orchestrator = Orchestrator(domain_registry=domain_registry)
-    intent_adapter = IntentAdapter(model_selector=model_selector)
+    orchestrator = Orchestrator(domain_registry=runtime_registry, model_selector=model_selector)
+    
+    # Get all registered capabilities for the Intent Adapter
+    registered_capabilities = runtime_registry.registered_capabilities
+    intent_adapter = IntentAdapter(model_selector=model_selector, initial_capabilities=registered_capabilities)
+    
     planner_service = PlannerService()
     execution_engine = ExecutionEngine(orchestrator=orchestrator)
     conversation_manager = ConversationManager(db_path=DB_PATH)
@@ -144,10 +160,13 @@ def render_result(intent, output) -> None:
 
             for key, value in result_view.items():
                 if isinstance(value, dict):
-                    for sub_key, sub_val in value.items():
-                        table.add_row(f"  {sub_key}", str(sub_val))
+                    # Check if it's a comparison dictionary (like symbol -> metrics)
+                    # Simple heuristic: if value is dict, maybe flatten or JSON dump
+                    table.add_row(key, json.dumps(value, indent=2))
                 elif isinstance(value, list):
-                    table.add_row(key, f"[{len(value)} items]")
+                    # Check if list of dicts (like gainers) to show specialized table?
+                    # For now just summary
+                     table.add_row(key, f"[{len(value)} items] " + str(value)[:50] + "...")
                 else:
                     table.add_row(key, str(value))
 
@@ -198,16 +217,15 @@ def render_intent_debug(intent) -> None:
     table.add_column("Value", style="white")
     table.add_row("Domain", intent.domain)
     table.add_row("Capability", intent.capability)
+    table.add_row("Original Query", intent.original_query)
     table.add_row("Parameters", str(intent.parameters))
     table.add_row("Confidence", f"{intent.confidence:.0%}")
 
     console.print(Panel(table, title="🧠 Intent (LLM)", border_style="yellow", box=box.ROUNDED))
 
 
-def main() -> None:
-    """Main CLI loop."""
-    setup_logging()
-
+async def run_agent_loop() -> None:
+    """Interactive Agent Loop."""
     console.print(Panel(
         Text.from_markup(
             "[bold cyan]Agent Orchestrator[/bold cyan]\n"
@@ -230,16 +248,14 @@ def main() -> None:
         sys.exit(1)
 
     console.print(f"[dim]Session: {cli.session_id}[/dim]")
-    # The orchestrator variable is not directly returned by build_pipeline anymore.
-    # If domain_registry is needed, it would need to be accessed via engine.orchestrator.domain_registry
-    # For now, commenting out or adjusting this line based on the new assignment.
-    # Assuming the user wants to keep the print, we'll access it via the engine.
     console.print(f"[dim]Domains: {engine.orchestrator.domain_registry.registered_domains}[/dim]")
+    # console.print(f"[dim]Capabilities: {len(engine.orchestrator.domain_registry.registered_capabilities)}[/dim]")
     console.print()
 
     while True:
         try:
             # Step 1: Entry — read input
+            # Use run_in_executor for blocking input if needed, but console.input is robust enough for CLI
             raw_input = console.input("[bold cyan]You → [/]")
 
             if raw_input.strip().lower() in ("exit", "quit", "q"):
@@ -257,6 +273,7 @@ def main() -> None:
             # Step 3: Intent Adapter — extract intent (LLM)
             with console.status("[yellow]Thinking...[/yellow]", spinner="dots"):
                 try:
+                    # Intent extraction is still sync/blocking (HTTP client), which is fine for CLI
                     intent = intent_adapter.extract(entry_request.input_text, history)
                 except ValueError as e:
                     console.print(f"\n[bold red]Intent extraction failed:[/] {e}")
@@ -274,7 +291,8 @@ def main() -> None:
 
             # Step 5-8: Execution Engine (Orchestrator + Domain + Model)
             with console.status("[green]Executing...[/green]", spinner="dots"):
-                output = engine.execute_plan(plan, original_intent=intent)
+                # await the async engine
+                output = await engine.execute_plan(plan, original_intent=intent)
 
             # Step 9: Render output
             render_result(intent, output)
@@ -292,6 +310,85 @@ def main() -> None:
         except EOFError:
             console.print("\n[dim]Goodbye! 👋[/dim]")
             break
+
+
+# ─── Admin Commands ─────────────────────────────────────────────
+
+def admin_list_domains():
+    db = RegistryDB(db_path=REGISTRY_DB_PATH)
+    domains = db.list_domains()
+    
+    table = Table(title="Registered Domains")
+    table.add_column("Name", style="cyan")
+    table.add_column("Type", style="magenta")
+    table.add_column("Config", style="dim")
+    table.add_column("Enabled", style="green")
+    
+    for d in domains:
+        table.add_row(d["name"], d["type"], d["config"], str(bool(d["enabled"])))
+        
+    console.print(table)
+
+
+def admin_add_domain(name, dtype, config_str):
+    try:
+        config = json.loads(config_str)
+    except json.JSONDecodeError:
+        console.print("[bold red]Error:[/] Config must be valid JSON.")
+        return
+
+    db = RegistryDB(db_path=REGISTRY_DB_PATH)
+    db.register_domain(name, dtype, config)
+    console.print(f"[bold green]Registered domain:[/] {name}")
+
+
+def admin_sync_domain(name):
+    db = RegistryDB(db_path=REGISTRY_DB_PATH)
+    runtime_registry = HandlerRegistry() # Dummy for loader
+    loader = RegistryLoader(db, runtime_registry)
+    
+    if loader.sync_capabilities(name):
+        console.print(f"[bold green]Successfully synced capabilities for:[/] {name}")
+    else:
+        console.print(f"[bold red]Failed to sync capabilities for:[/] {name}")
+
+
+def main() -> None:
+    """Entrypoint with CLI args."""
+    setup_logging()
+    
+    parser = argparse.ArgumentParser(description="Agent Orchestrator")
+    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+    
+    # Run Agent
+    subparsers.add_parser("run", help="Run interactive agent")
+    
+    # Domain Management
+    subparsers.add_parser("domain-list", help="List registered domains")
+    
+    add_parser = subparsers.add_parser("domain-add", help="Register a new domain")
+    add_parser.add_argument("name", help="Domain name")
+    add_parser.add_argument("type", choices=["local", "remote_http"], help="Domain type")
+    add_parser.add_argument("config", help="JSON config string (e.g. '{\"url\": \"...\"}')")
+    
+    sync_parser = subparsers.add_parser("domain-sync", help="Sync capabilities from remote domain")
+    sync_parser.add_argument("name", help="Domain name")
+    
+    args = parser.parse_args()
+    
+    if args.command == "domain-list":
+        admin_list_domains()
+    elif args.command == "domain-add":
+        admin_add_domain(args.name, args.type, args.config)
+    elif args.command == "domain-sync":
+        admin_sync_domain(args.name)
+    elif args.command == "run" or args.command is None:
+        try:
+            asyncio.run(run_agent_loop())
+        except KeyboardInterrupt:
+            pass
+    else:
+        parser.print_help()
 
 
 if __name__ == "__main__":

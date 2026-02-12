@@ -21,87 +21,12 @@ from shared.models import IntentOutput, ModelPolicy
 
 logger = logging.getLogger(__name__)
 
-# Available actions that map to MCP Finance Server tools
-FINANCE_CAPABILITIES = [
-    "get_stock_price",
-    "get_historical_data",
-    "search_symbol",
-    "get_account_summary",
-    "get_option_chain",
-    "get_option_greeks",
-    "get_fundamentals",
-    "get_dividends",
-    "get_company_info",
-    "get_financial_statements",
-    "get_exchange_info",
-    "yahoo_search",
-    "get_top_gainers",
-    "get_top_losers",
-    "get_top_dividends",
-    "get_market_performance",
-    "compare_fundamentals",
-]
-
-SYSTEM_PROMPT = f"""You are an intent extraction engine. Your ONLY job is to analyze the user's message and return a structured JSON object.
-
-You MUST respond with ONLY a valid JSON object. No explanations, no markdown, no extra text.
-
-The JSON must follow this exact schema:
-{{
-  "domain": "<domain>",
-  "action": "<action>",
-  "parameters": {{}},
-  "confidence": <float 0.0-1.0>
-}}
-
-There are TWO domains:
-
-1. "general" — for greetings, casual conversation, questions about yourself, help requests, or anything NOT related to finance/stocks/markets.
-   - action: "chat"
-   - parameters: {{"message": "<the user's message>"}}
-   - Examples: "oi", "hello", "como funciona?", "me ajuda", "quem é você?", "obrigado"
-
-2. "finance" — for anything related to stocks, markets, prices, options, fundamentals, dividends, company info, financial data.
-   Available actions:
-{json.dumps(FINANCE_CAPABILITIES, indent=2)}
-
-Parameter rules for finance actions:
-- get_stock_price: {{"symbol": "AAPL"}}
-- get_historical_data: {{"symbol": "AAPL", "duration": "1 M", "bar_size": "1 day"}}
-- search_symbol: {{"query": "Apple"}}
-- get_account_summary: {{}}
-- get_option_chain: {{"symbol": "AAPL"}}
-- get_option_greeks: {{"symbol": "AAPL", "date": "20240119", "strike": 150.0, "right": "C"}}
-- get_fundamentals: {{"symbol": "AAPL"}}
-- get_dividends: {{"symbol": "KO"}}
-- get_company_info: {{"symbol": "TSLA"}}
-- get_financial_statements: {{"symbol": "MSFT"}}
-- get_exchange_info: {{"symbol": "VOW3.DE"}}
-- yahoo_search: {{"query": "Brazilian banks"}}
-- get_top_gainers: {{"market": "BR"}} (or "US", "SE")
-- get_top_losers: {{"market": "US", "period": "1d"}}
-- get_top_dividends: {{"market": "SE"}}
-- get_market_performance: {{"market": "US", "period": "YTD"}}
-- compare_fundamentals: {{"symbols": ["PETR4.SA", "VALE3.SA"]}}
-
-
-Rules:
-1. FIRST decide the domain: if the message is about stocks, markets, prices, finance → "finance". Otherwise → "general".
-2. For finance: pick the most appropriate action and extract parameters.
-3. For Swedish stocks, append ".ST" to the symbol (e.g., "NDA.ST" for Nordea).
-4. For Brazilian stocks, append ".SA" (e.g., "PETR4.SA").
-5. For German stocks, append ".DE" (e.g., "VOW3.DE").
-6. If the domain is finance but unsure about the action, use "yahoo_search" with the user's query.
-7. Confidence should reflect how certain you are about the intent (0.0-1.0).
-8. NEVER add explanations. Return ONLY the JSON object.
-"""
-
-
 class IntentAdapter:
     """Extracts structured Intent from user input using Model Layer."""
 
-    def __init__(self, model_selector: ModelSelector):
+    def __init__(self, model_selector: ModelSelector, initial_capabilities: list[str] | None = None):
         self.model_selector = model_selector
+        self.capabilities = initial_capabilities or []
         self.policy = ModelPolicy(
             model_name="llama3.1:8b",
             temperature=0.0,
@@ -109,6 +34,11 @@ class IntentAdapter:
             max_retries=3,
             json_mode=True,
         )
+
+    def update_capabilities(self, capabilities: list[str]) -> None:
+        """Update the list of capabilities known to the LLM."""
+        self.capabilities = capabilities
+        logger.info("IntentAdapter updated with %d capabilities", len(capabilities))
 
     def extract(self, input_text: str, history: list[dict] | None = None, session_id: str | None = None) -> IntentOutput:
         """
@@ -130,14 +60,12 @@ class IntentAdapter:
                 raise ValueError("Model returned non-dict JSON")
 
             # Map to internal IntentOutput schema
-            # Note: The prompt asks for 'domain', 'action', 'parameters', 'confidence'
-            # We map this to our strict IntentOutput
-            # IMPORTANT: We trust the prompt to match schema, but we default if fields missing
             return IntentOutput(
                 domain=raw_data.get("domain", "general"),
-                capability=raw_data.get("action", "chat"), # Default to chat if unsure
+                capability=raw_data.get("action", "chat"), 
                 confidence=float(raw_data.get("confidence", 0.0)),
-                parameters=raw_data.get("parameters", {})
+                parameters=raw_data.get("parameters", {}),
+                original_query=input_text
             )
             
         except Exception as e:
@@ -147,12 +75,63 @@ class IntentAdapter:
                 domain="general",
                 capability="chat",
                 confidence=0.0,
-                parameters={"message": input_text}
+                parameters={"message": input_text},
+                original_query=input_text
             )
+
+    def _build_system_prompt(self) -> str:
+        """Build the system prompt dynamically based on current capabilities."""
+        return f"""You are an intent extraction engine. Your ONLY job is to analyze the user's message and return a structured JSON object.
+
+You MUST respond with ONLY a valid JSON object. No explanations, no markdown, no extra text.
+
+The JSON must follow this exact schema:
+{{
+  "domain": "<domain>",
+  "action": "<action>",
+  "parameters": {{}},
+  "confidence": <float 0.0-1.0>
+}}
+
+There are TWO domains:
+
+1. "general" — for greetings, casual conversation, questions about yourself, help requests, or anything NOT related to finance/stocks/markets.
+   - action: "chat"
+   - parameters: {{"message": "<the user's message>"}}
+   - Examples: "oi", "hello", "como funciona?", "me ajuda", "quem é você?", "obrigado"
+
+2. "finance" — for anything related to stocks, markets, prices, options, fundamentals, dividends, company info, financial data.
+   Available actions:
+{json.dumps(self.capabilities, indent=2)}
+
+Rules:
+1. FIRST decide the domain: if the message is about stocks, markets, prices, finance → "finance". Otherwise → "general".
+2. Symbol detection:
+   - For Brazilian stocks (Bovespa), ALWAYS append ".SA" to the symbol (e.g., "PETR4.SA", "VALE3.SA").
+   - For Swedish stocks (Stockholm), ALWAYS append ".ST" (e.g., "NDA.ST", "VOLV-B.ST").
+   - For US stocks, use the symbol as is (e.g., "AAPL", "TSLA").
+   - If a company is Brazilian (like Vale, Petrobras, Itaú) but the user didn't specify the market, use ".SA".
+3. Confidence Scenarios:
+   - Set "confidence": 0.99 ONLY if you are absolutely certain about the action and symbols.
+   - Set "confidence": 0.90 or lower if there is ANY ambiguity (e.g., you are guessing a ticker name, or the user's query is vague).
+   - If the query is "qual o preco da vale?", domain is "finance", action is "get_stock_price", symbol is "VALE3.SA", confidence is 0.99.
+4. If the domain is finance but unsure about the action, use "yahoo_search" with the user's query.
+5. FOLLOW-UP / CONTEXT AWARENESS (CRITICAL):
+   - Look at the CHAT HISTORY.
+   - If the LAST message from the Assistant was a question (e.g., "Which market?", "Qual mercado?"), the User's input is likely the ANSWER to that question.
+   - You MUST combine the answer with the implied intent from the previous turn.
+   - Example:
+     Assistant: "Qual mercado você prefere? (US, BR, SE)"
+     User: "BR"
+     -> Domain: "finance", Action: "get_top_gainers" (inferred from context), Parameters: {{"market": "BR"}}
+     -> DO NOT return "chat" domain for "BR" if it answers a finance question.
+
+6. NEVER add explanations. Return ONLY the JSON object.
+"""
 
     def _build_messages(self, input_text: str, history: list[dict] | None = None) -> list[dict]:
         """Build message list for Ollama chat API."""
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages = [{"role": "system", "content": self._build_system_prompt()}]
 
         # Add history context (last few turns only)
         if history:

@@ -23,7 +23,7 @@ class ExecutionEngine:
     def __init__(self, orchestrator: Orchestrator):
         self.orchestrator = orchestrator
 
-    def execute_plan(self, plan: ExecutionPlan, original_intent: IntentOutput) -> DomainOutput:
+    async def execute_plan(self, plan: ExecutionPlan, original_intent: IntentOutput) -> DomainOutput:
         """
         Execute the plan step-by-step.
         
@@ -55,14 +55,14 @@ class ExecutionEngine:
 
             try:
                 # TODO: Implement step timeout using context manager or threads
-                output = self.orchestrator.process(step_intent)
+                output = await self.orchestrator.process(step_intent)
                 
                 execution_context[step.id] = output
                 final_output = output
                 
-                if output.status == "failure":
-                    logger.error("Step %d failed: %s", step.id, output.explanation)
-                    # Stop execution on failure (strict mode)
+                if output.status in ("failure", "clarification"):
+                    logger.info("Step %d stopped execution: status=%s", step.id, output.status)
+                    # Stop execution on failure or clarification
                     return output
 
             except Exception as e:

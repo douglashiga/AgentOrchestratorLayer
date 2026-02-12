@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class StrategyCore:
     """Deterministic strategy engine. Structures skill data into Decisions."""
 
-    def execute(self, intent: IntentOutput, execution_context: ExecutionContext) -> Decision:
+    def execute(self, intent: IntentOutput, execution_context: ExecutionContext, registry: Any = None) -> Decision:
         """
         Process intent + execution context into a Decision.
         For v1: structures skill data into a clean Decision response.
@@ -40,7 +40,24 @@ class StrategyCore:
             )
 
         # Build result with market context enrichment
-        result = skill_data.get("data", {})
+        raw_result = skill_data.get("data", {})
+        
+        # Flatten inner envelope if it exists
+        if isinstance(raw_result, dict) and "data" in raw_result:
+            inner_data = raw_result["data"]
+            if isinstance(inner_data, dict):
+                 # Flatten: Keep outer keys (metadata) and merge inner keys (data)
+                 raw_result = {**raw_result, **inner_data}
+            # If list, keep structure as-is to preserve metadata (like 'market') in the root
+
+        # Normalize result to dictionary
+        if isinstance(raw_result, list):
+            result = {"items": raw_result, "count": len(raw_result)}
+        elif isinstance(raw_result, dict):
+            result = raw_result
+        else:
+            result = {"value": raw_result}
+
         enriched_result = {
             **result,
             "_market_context": {
@@ -62,7 +79,7 @@ class StrategyCore:
         }
 
         # Generate human-readable explanation
-        explanation = self._generate_explanation(intent, result, domain_ctx)
+        explanation = self._generate_explanation(intent, result, domain_ctx, registry)
 
         return Decision(
             action=intent.capability,
@@ -73,39 +90,62 @@ class StrategyCore:
         )
 
     def _generate_explanation(
-        self, intent: IntentOutput, result: dict, domain_ctx: DomainContext
+        self, intent: IntentOutput, result: dict, domain_ctx: DomainContext, registry: Any = None
     ) -> str:
         """Generate deterministic human-readable explanation."""
         capability = intent.capability
         params = intent.parameters
         symbol = params.get("symbol", params.get("query", "N/A"))
 
-        match capability:
-            case "get_stock_price":
-                price = result.get("price", "N/A")
-                return f"{symbol} is currently trading at {price} {domain_ctx.currency}."
-            case "get_fundamentals":
-                return f"Fundamentals data for {symbol} ({domain_ctx.market} market)."
-            case "get_dividends":
-                return f"Dividend history for {symbol} ({domain_ctx.currency})."
-            case "get_company_info":
-                name = result.get("name", symbol)
-                return f"Company information for {name}."
-            case "get_historical_data":
-                duration = params.get("duration", "N/A")
-                return f"Historical data for {symbol} over {duration}."
-            case "get_option_chain":
-                return f"Option chain for {symbol}."
-            case "get_option_greeks":
-                return f"Option Greeks for {symbol}."
-            case "get_financial_statements":
-                return f"Financial statements for {symbol}."
-            case "get_exchange_info":
-                return f"Exchange information for {symbol}."
-            case "get_account_summary":
-                return "Account summary retrieved."
-            case "search_symbol" | "yahoo_search":
-                query = params.get("query", symbol)
-                return f"Search results for '{query}'."
-            case _:
-                return f"Executed '{capability}' for {symbol}."
+        # ─── Metadata-Driven Generation ──────────────────────────────
+        metadata = {}
+        if registry:
+            metadata = registry.get_metadata(capability)
+        
+        template = metadata.get("explanation_template")
+        
+        # ─── List Handling & Count Injection ─────────────────────────
+        # If result is a list (or normalized list), we inject 'count' into the context
+        # and checking if the template logic handles it or if we append it.
+        
+        items_count = 0
+        if isinstance(result, dict):
+            if "items" in result and isinstance(result["items"], list):
+                items_count = len(result["items"])
+            elif "data" in result and isinstance(result["data"], list):
+                items_count = len(result["data"])
+        elif isinstance(result, list):
+            items_count = len(result)
+
+        if template:
+             try:
+                  # Robust Formatting: Use .format() but handle missing keys gracefully?
+                  # Actually, we expect the template to use known keys: 
+                  # {symbol}, {market}, {currency}, {params}, {result}
+                  
+                  # Flatten params for easier access in template (e.g. {params[period]} -> {period} if we want, 
+                  # but let's stick to strict {params[key]} or pre-calculated context)
+                  
+                  # Context for template
+                  ctx = {
+                      "symbol": symbol,
+                      "market": domain_ctx.market,
+                      "currency": domain_ctx.currency,
+                      "params": params,
+                      "result": result,
+                      "count": items_count
+                  }
+                  
+                  explanation = template.format(**ctx)
+                  
+                  if items_count > 0 and "{count}" not in template:
+                      explanation += f" Found {items_count} items."
+                      
+                  return explanation
+
+             except Exception as e:
+                  logger.warning(f"Failed to format template '{template}': {e}")
+                  # Fallback to generic if template fails
+        
+        # ─── Generic Fallback ────────────────────────────────────────
+        return f"Executed '{capability}' for {symbol}."

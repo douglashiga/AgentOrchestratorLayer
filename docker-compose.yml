@@ -1,23 +1,37 @@
-version: "3.8"
-
 services:
-  agent-orchestrator:
+  finance-server:
     build: .
-    container_name: agent-orchestrator
+    container_name: finance-domain-server
     environment:
-      - OLLAMA_URL=http://host.docker.internal:11434  # Access host's Ollama
-      - MCP_URL=http://mcp-finance:8000/sse           # Access MCP service by name
+      - MCP_URL=${MCP_URL:-http://host.docker.internal:8000/sse}
+      - PYTHONPATH=/app
+    ports:
+      - "8001:8001"
     volumes:
-      - ./conversations.db:/app/conversations.db      # Persist SQLite DB
-    stdin_open: true                                  # Keep stdin open for CLI interaction
-    tty: true                                         # Allocate pseudo-TTY for CLI interaction
-    networks:
-      - agent-network
+      - ./registry.db:/app/registry.db
+    command: python domains/finance/server.py
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
-  # Note: The user mentioned MCP is in *another* docker container.
-  # Ideally, we should join that existing network or use host networking.
-  # For now, I'm defining a network here, assuming we might bring MCP here or bridge it.
-  
-networks:
-  agent-network:
-    driver: bridge
+  agent:
+    build: .
+    container_name: finance-agent
+    stdin_open: true # Allows interactive CLI
+    tty: true # Allows interactive CLI
+    environment:
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - REGISTRY_DB_PATH=/app/registry.db
+      - DB_PATH=/app/agent.db
+      - MCP_URL=${MCP_URL:-http://host.docker.internal:8000/sse}
+      - PYTHONPATH=/app
+    volumes:
+      - ./registry.db:/app/registry.db
+      - ./agent.db:/app/agent.db
+    depends_on:
+      - finance-server
+    command: python main.py run
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  db-data:

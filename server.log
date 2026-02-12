@@ -1,0 +1,21 @@
+INFO:     Started server process [18182]
+INFO:     Waiting for application startup.
+INFO:finance_server:Starting Finance Server...
+INFO:skills.registry:Registered skill: mcp_finance → MCPAdapter
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
+INFO:     127.0.0.1:53484 - "GET /manifest HTTP/1.1" 200 OK
+INFO:domains.finance.handler:Finance handler executing: capability=get_stock_price
+INFO:domains.finance.context:Context resolved → BR (B3, suffix=.SA)
+INFO:domains.finance.handler:Context resolved: BR (BRL)
+INFO:skills.implementations.mcp_adapter:MCP call → tool='get_stock_price' arguments={'symbol': 'VALE.SA', 'market': 'BR'}
+ERROR:skills.implementations.mcp_adapter:MCP SSE error: unhandled errors in a TaskGroup (1 sub-exception)
+INFO:skills.gateway:Skill 'mcp_finance' executed successfully
+INFO:     127.0.0.1:53494 - "POST /execute HTTP/1.1" 200 OK
+INFO:domains.finance.handler:Finance handler executing: capability=get_top_gainers
+INFO:domains.finance.context:Context resolved → US (default for 'DEFAULT')
+INFO:domains.finance.handler:Context resolved: US (USD)
+INFO:skills.implementations.mcp_adapter:MCP call → tool='get_top_gainers' arguments={'country': 'Brazil'}
+ERROR:skills.implementations.mcp_adapter:MCP SSE error: unhandled errors in a TaskGroup (1 sub-exception)
+INFO:skills.gateway:Skill 'mcp_finance' executed successfully
+INFO:     127.0.0.1:53505 - "POST /execute HTTP/1.1" 200 OK

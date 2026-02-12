@@ -35,14 +35,21 @@ graph TD
 | **7. Model** | LLM Abstraction | Policies (Retry, Timeout, Fallback) |
 | **8. Observability** | Insight & Debugging | Structured Logging & Metrics |
 
-### Anti-Hallucination Rules
-
-1. **Strict Schemas**: All LLM outputs must be valid JSON matching Pydantic models.
-2. **Confidence Gating**: Intents with confidence < 0.5 are rejected or escalated.
-3. **No Logic in LLM**: Models only classify or format; they never execute business rules.
-4. **Timeouts**: Mandatory timeouts at Execution and Model layers.
-5. **Retries**: Max 3 schema validation retries before failure.
-6. **Capability Routing**: Routing based on specific capabilities (e.g., `get_stock_price`) rather than broad domains.
+### Anti-Hallucination & Robustness Rules
+ 
+ 1. **Strict Schemas**: All LLM outputs must be valid JSON matching Pydantic models.
+ 2. **Confidence Gating**: Intents with confidence < 0.98 are rejected or trigger clarification.
+ 3. **No Logic in LLM**: Models only classify or format; they never execute business rules.
+ 4. **Timeouts**: Mandatory timeouts at Execution and Model layers.
+ 5. **Retries**: Max 3 schema validation retries before failure.
+ 6. **Capability Routing**: Routing based on specific capabilities (e.g., `get_stock_price`) rather than broad domains.
+ 
+ ### Key Features
+ 
+ - **Dynamic Domain Architecture**: Capabilities are loaded from a SQLite Registry, allowing "zero-code" integration of new tools via the Finance Server.
+ - **Metadata-Driven Explanations**: Explanation templates are stored in the Registry, enabling dynamic, data-driven responses without code changes.
+ - **Multilingual Context**: The system detects the user's language (e.g., Portuguese) from the original query and responds/clarifies accordingly.
+ - **Context-Aware Clarification**: Ambiguous queries trigger specific follow-up questions (e.g., "Which market? US, BR, SE?"), and short answers (e.g., "BR") are correctly mapped to the context.
 
 ---
 

@@ -28,29 +28,6 @@ from mcp.client.sse import sse_client
 
 logger = logging.getLogger(__name__)
 
-# Map of action names to MCP tool names
-_ACTION_TO_TOOL: dict[str, str] = {
-    "get_stock_price": "get_stock_price",
-    "get_historical_data": "get_historical_data",
-    "search_symbol": "search_symbol",
-    "get_account_summary": "get_account_summary",
-    "get_option_chain": "get_option_chain",
-    "get_option_greeks": "get_option_greeks",
-    "get_fundamentals": "get_fundamentals",
-    "get_dividends": "get_dividends",
-    "get_company_info": "get_company_info",
-    "get_financial_statements": "get_financial_statements",
-    "get_exchange_info": "get_exchange_info",
-    "yahoo_search": "yahoo_search",
-    # Mapped to yahoo_search temporarily until MCP Server is updated
-    "get_top_gainers": "yahoo_search",
-    "get_top_losers": "yahoo_search",
-    "get_top_dividends": "yahoo_search",
-    "get_market_performance": "yahoo_search",
-    "compare_fundamentals": "yahoo_search",
-}
-
-
 class MCPAdapter:
     """Calls MCP Finance Server via SSE with persistent session.
 
@@ -87,48 +64,18 @@ class MCPAdapter:
         """
         Execute an MCP tool call via persistent SSE session.
         Parameters must include '_action' key to identify which tool to call.
+        
+        Dynamic Resolution:
+        - Uses '_action' as the tool name directly (Pass-Through).
+        - Allows optional '_tool_map' in parameters for legacy translations.
         """
         action = parameters.pop("_action", None)
         if not action:
             return {"success": False, "error": "No '_action' specified in parameters."}
 
-        # ─── Mock Data for Missing Capabilities ──────────────────────
-        # Since the MCP Server doesn't support these yet, we return mock data
-        # to verify the Agent's UI and Orchestration flow.
-        
-        if action == "get_top_gainers":
-            return {
-                "success": True, 
-                "data": [
-                    {"symbol": "MOCK3.SA", "price": 10.50, "change": "+5.2%"},
-                    {"symbol": "TEST3.SA", "price": 22.10, "change": "+3.8%"},
-                    {"symbol": "FAKE3.SA", "price": 15.00, "change": "+2.1%"}
-                ]
-            }
-        
-        if action == "get_top_losers":
-             return {
-                "success": True, 
-                "data": [
-                    {"symbol": "DOWN3.SA", "price": 8.20, "change": "-4.5%"},
-                    {"symbol": "FALL3.SA", "price": 12.00, "change": "-3.2%"}
-                ]
-            }
-
-        if action == "compare_fundamentals":
-            return {
-                "success": True,
-                "data": {
-                    "PETR4.SA": {"P/E": 4.5, "DY": "18%", "ROE": "35%"},
-                    "VALE3.SA": {"P/E": 6.2, "DY": "8%", "ROE": "28%"}
-                }
-            }
-            
-        # ────────────────────────────────────────────────────────────
-
-        tool_name = _ACTION_TO_TOOL.get(action)
-        if not tool_name:
-            return {"success": False, "error": f"Unknown action: '{action}'"}
+        # Dynamic Tool Resolution (Direct Mapping)
+        tool_map = parameters.pop("_tool_map", {})
+        tool_name = tool_map.get(action, action)
 
         try:
             return self._submit(self._call_tool(tool_name, parameters))
@@ -184,9 +131,51 @@ class MCPAdapter:
                          f"Make sure the MCP Finance Server is running.",
             }
         except Exception as e:
-            logger.error("MCP SSE error: %s", e)
-            return {"success": False, "error": f"MCP SSE error: {e}"}
+            # Handle ExceptionGroup (common in mcp TaskGroups) to get the real cause
+            error_detail = str(e)
+            if hasattr(e, "exceptions") and e.exceptions:
+                # Python 3.11+ ExceptionGroup or anyio ExceptionGroup
+                sub_errors = [str(se) for se in e.exceptions]
+                error_detail = f"{e} (Sub-errors: {', '.join(sub_errors)})"
+                logger.error("MCP SSE TaskGroup failure: %s", error_detail)
+            else:
+                logger.error("MCP SSE error: %s", e, exc_info=True)
+                
+            return {"success": False, "error": f"MCP SSE error: {error_detail}"}
 
+    def list_tools(self) -> list[dict[str, Any]]:
+        """
+        List available tools from the MCP server.
+        Returns a list of dicts with 'name', 'description', and 'schema'.
+        """
+        try:
+            return self._submit(self._fetch_tools_async())
+        except Exception as e:
+            logger.error("Failed to list MCP tools: %s", e)
+            return []
+
+    async def _fetch_tools_async(self) -> list[dict[str, Any]]:
+        """Async implementation of list_tools."""
+        logger.info("Fetching tool list from MCP at %s...", self.mcp_url)
+        try:
+            async with sse_client(self.mcp_url) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    result = await session.list_tools()
+                    
+                    tools = []
+                    for tool in result.tools:
+                        tools.append({
+                            "name": tool.name,
+                            "description": tool.description,
+                            "schema": tool.inputSchema
+                        })
+                    
+                    logger.info("Fetched %d tools from MCP", len(tools))
+                    return tools
+        except Exception as e:
+            logger.error("Error fetching tools from MCP: %s", e)
+            raise
     def close(self) -> None:
         """Shutdown the background event loop."""
         self._loop.call_soon_threadsafe(self._loop.stop)

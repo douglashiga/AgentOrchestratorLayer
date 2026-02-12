@@ -31,7 +31,7 @@ class GeneralDomainHandler:
             json_mode=False, # Chat returns text, not JSON
         )
 
-    def execute(self, intent: IntentOutput) -> DomainOutput:
+    async def execute(self, intent: IntentOutput) -> DomainOutput:
         """Generate a conversational response."""
         user_message = intent.parameters.get("message", "")
 

@@ -30,6 +30,7 @@ class IntentOutput(BaseModel):
     capability: str
     confidence: float
     parameters: dict[str, Any] = Field(default_factory=dict)
+    original_query: str = Field(default="")
 
 # ─── Planner Layer (New v3) ────────────────────────────────────
 
