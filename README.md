@@ -4,90 +4,50 @@ Multi-layer, multi-domain agent orchestrator with **deterministic core** and **i
 
 ## 📐 Architecture
 
-```
-[Telegram]      [HTTP API]      [CLI]
-        ↓             ↓             ↓
-            Entry Adapters
-                   ↓
-         Conversation State Manager
-                   ↓
-              Intent Adapter (LLM)
-                   ↓
-            Orchestrator (Stateless)
-                   ↓
-              Domain Registry
-                   ↓
-           Domain Handler
-                   ↓
-           Context Resolver
-                   ↓
-              Skill Gateway
-                   ↓
-              Skill Registry
-                   ↓
-          Skill Implementations
-                   ↓
-            Execution Context
-                   ↓
-             Strategy Core
-                   ↓
-                Decision
-                   ↓
-         Conversation Persist
-                   ↓
-                Response
-```
+## 📐 Architecture
 
-### Layers
-
-| Layer | File | Responsibility |
-|-------|------|---------------|
-| **Entry** | `entry/cli.py` | Receives input, normalizes to `EntryRequest`. No logic. |
-| **Conversation** | `conversation/manager.py` | SQLite history per `session_id`. No business logic. |
-| **Intent Adapter** | `intent/adapter.py` | Ollama LLM → structured `Intent` (JSON, temp=0). No calculations. |
-| **Orchestrator** | `orchestrator/orchestrator.py` | Stateless router. Resolves domain, delegates. No business logic. |
-| **Domain Registry** | `registry/domain_registry.py` | Maps `domain_name → Handler`. Pure lookup. |
-| **Finance Domain** | `domains/finance/handler.py` | Orchestrates Context → Skills → Strategy internally. |
-| **Context Resolver** | `domains/finance/context.py` | Deterministic market detection from ticker suffix. |
-| **Strategy Core** | `domains/finance/core.py` | Deterministic calculations. No LLM, no HTTP. 100% testable. |
-| **General Domain** | `domains/general/handler.py` | Conversational responses for non-finance queries. |
-| **Skill Gateway** | `skills/gateway.py` | Controlled access to skills via registry. |
-| **Skill Registry** | `skills/registry.py` | Maps `skill_name → Implementation`. Pure lookup. |
-| **MCP Adapter** | `skills/implementations/mcp_adapter.py` | Calls MCP Finance Server via SSE protocol. |
-| **Shared Models** | `shared/models.py` | Pydantic models (all frozen/immutable). |
-
-### Execution Flow
+### 8-Layer Reliability Architecture
 
 ```
-1. Entry recebe requisição
-2. Conversation Manager recupera histórico
-3. Intent Adapter gera Intent estruturado (LLM)
-4. Intent é validado (Pydantic schema)
-5. Orchestrator resolve domínio
-6. DomainHandler executa:
-   • Context Resolver (determinístico)
-   • Skill Gateway (busca dados via MCP)
-   • Strategy Core (cálculo determinístico)
-7. Decision é gerada
-8. Conversation Manager salva interação
-9. Response retorna ao Entry Adapter
-10. Entry responde ao usuário
+[User]
+  ↓
+[1. Entry Layer]      (CLI/API)
+  ↓
+[2. Intent Layer]     (Strict JSON + Confidence)
+  ↓
+[3. Planner Layer]    (Decomposition & Plan Generation)
+  ↓
+[4. Execution Engine] (Timeout, Retry, Dependency Management)
+  ↓
+[5. Orchestrator]     (Registry Lookup & Schema Validation)
+  ↓
+[6. Domain Layer]     (Pure Logic & Isolation)
+  ↓      ↖ (Retry/Fallback)
+[7. Model Layer]      (LLM Abstraction & Policy)
+  ↓
+[8. Observability]    (Structured Logging & Metrics)
 ```
+
+### Layers Responsibilities
+
+| Layer | Responsibility | Key Feature |
+|-------|---------------|-------------|
+| **1. Entry** | I/O Normalization | Protocol Agnostic |
+| **2. Intent** | Classification & Confidence | Strict Schema (Pydantic) |
+| **3. Planner** | Task Decomposition | Structured Execution Plan |
+| **4. Execution** | Run Management | Timeouts & Dependencies |
+| **5. Orchestrator** | Routing & Validation | "Dumb" Registry Lookup |
+| **6. Domain** | Business Logic | Isolated & Deterministic |
+| **7. Model** | LLM Handling | Retry, Fallback & Policy |
+| **8. Observability** | Insight & Debugging | Structured Events |
 
 ### Anti-Hallucination Rules
 
-| # | Rule |
-|---|------|
-| 1 | LLM **never** participates in calculations |
-| 2 | History **never** replaces real data |
-| 3 | Strategy Core **never** accesses HTTP |
-| 4 | Skills **never** decide when they are called |
-| 5 | Orchestrator **never** knows business logic |
-| 6 | No layer skipping — each layer calls only the next |
-| 7 | All external inputs validated (Pydantic) |
-| 8 | All external responses validated |
-| 9 | Contexts are **immutable** after creation |
-| 10 | No layer alters a previous context |
+1. **Strict Schemas**: All LLM outputs must be valid JSON matching Pydantic models.
+2. **Confidence Gating**: Intents with confidence < 0.5 are rejected or escalated.
+3. **No Logic in LLM**: Models only classify or formats; they never execute business rules.
+4. **Timeouts**: Mandatory timeouts at Execution and Model layers.
+5. **Retries**: Max 3 schema validation retries before failure.
 
 ---
 

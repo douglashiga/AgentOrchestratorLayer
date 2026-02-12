@@ -15,7 +15,7 @@ Prohibitions:
 
 import logging
 
-from shared.models import Decision, Intent
+from shared.models import Decision, IntentOutput
 
 from registry.domain_registry import DomainRegistry
 
@@ -28,18 +28,18 @@ class Orchestrator:
     def __init__(self, domain_registry: DomainRegistry):
         self.domain_registry = domain_registry
 
-    def process(self, intent: Intent) -> Decision:
+    def process(self, intent: IntentOutput) -> Decision:
         """
         Resolve the domain from the intent and delegate execution.
         Returns a Decision — never raises for business errors.
         """
-        logger.info("Orchestrator processing: domain=%s action=%s", intent.domain, intent.action)
+        logger.info("Orchestrator processing: domain=%s capability=%s", intent.domain, intent.capability)
 
         # Resolve domain handler
         handler = self.domain_registry.resolve(intent.domain)
         if handler is None:
             return Decision(
-                action=intent.action,
+                action=intent.capability,
                 success=False,
                 error=f"Unknown domain: '{intent.domain}'",
                 explanation=f"No handler registered for domain '{intent.domain}'.",
@@ -54,7 +54,7 @@ class Orchestrator:
         except Exception as e:
             logger.exception("Domain handler error for %s", intent.domain)
             return Decision(
-                action=intent.action,
+                action=intent.capability,
                 success=False,
                 error=str(e),
                 explanation=f"Error in domain '{intent.domain}': {e}",

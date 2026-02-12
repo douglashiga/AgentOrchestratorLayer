@@ -21,24 +21,43 @@ class EntryRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-# ─── Intent (LLM output, schema-validated) ─────────────────────
+# ─── Intent Layer (New v2) ─────────────────────────────────────
 
-class Intent(BaseModel):
-    """Structured intent extracted by the LLM Intent Adapter."""
+class IntentOutput(BaseModel):
+    """Strict output from Intent Layer."""
     model_config = {"frozen": True}
+    domain: str
+    capability: str
+    confidence: float
+    parameters: dict[str, Any] = Field(default_factory=dict)
 
-    domain: str = Field(..., description="Target domain, e.g. 'finance'")
-    action: str = Field(..., description="Action to perform, e.g. 'get_stock_price'")
-    parameters: dict[str, Any] = Field(default_factory=dict, description="Action parameters")
-    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+# ─── Model Layer (Policy) ──────────────────────────────────────
+
+class ModelPolicy(BaseModel):
+    """Configuration for Model Layer execution."""
+    model_config = {"frozen": True}
+    model_name: str
+    temperature: float = 0.0
+    timeout_seconds: float = 30.0
+    max_retries: int = 3
+    json_mode: bool = True
 
 
-# ─── Domain Context (deterministic) ────────────────────────────
+# ─── Domain Output (New v2) ────────────────────────────────────
+
+class DomainOutput(BaseModel):
+    """Standardized output from any Domain Handler."""
+    model_config = {"frozen": True}
+    result: dict[str, Any]
+    confidence: float
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# ─── Domain Context (Finance) ──────────────────────────────────
 
 class DomainContext(BaseModel):
-    """Deterministic context resolved from ticker/symbol analysis.
-    All fields are fixed per market — no inference, no LLM.
-    """
+    """Deterministic context resolved from ticker/symbol analysis."""
     model_config = {"frozen": True}
 
     # Market identification

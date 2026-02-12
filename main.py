@@ -25,6 +25,7 @@ from domains.general.handler import GeneralDomainHandler
 from skills.gateway import SkillGateway
 from skills.registry import SkillRegistry
 from skills.implementations.mcp_adapter import MCPAdapter
+from models.selector import ModelSelector
 
 # ─── Configuration ──────────────────────────────────────────────
 
@@ -66,6 +67,9 @@ def preload_models() -> None:
 
 def build_pipeline() -> tuple[CLIAdapter, ConversationManager, IntentAdapter, Orchestrator]:
     """Wire all layers together."""
+    # Shared
+    model_selector = ModelSelector(ollama_url=OLLAMA_URL)
+
     # Skills
     mcp_adapter = MCPAdapter(mcp_url=MCP_URL)
     skill_registry = SkillRegistry()
@@ -74,14 +78,14 @@ def build_pipeline() -> tuple[CLIAdapter, ConversationManager, IntentAdapter, Or
 
     # Domains
     finance_handler = FinanceDomainHandler(skill_gateway=skill_gateway)
-    general_handler = GeneralDomainHandler(ollama_url=OLLAMA_URL, model=OLLAMA_CHAT_MODEL)
+    general_handler = GeneralDomainHandler(model_selector=model_selector, model_name=OLLAMA_CHAT_MODEL)
     domain_registry = DomainRegistry()
     domain_registry.register("finance", finance_handler)
     domain_registry.register("general", general_handler)
 
     # Core
     orchestrator = Orchestrator(domain_registry=domain_registry)
-    intent_adapter = IntentAdapter(ollama_url=OLLAMA_URL, model=OLLAMA_INTENT_MODEL)
+    intent_adapter = IntentAdapter(model_selector=model_selector)
     conversation_manager = ConversationManager(db_path=DB_PATH)
     cli_adapter = CLIAdapter()
 
@@ -167,7 +171,7 @@ def render_intent_debug(intent) -> None:
     table.add_column("Key", style="bold yellow")
     table.add_column("Value", style="white")
     table.add_row("Domain", intent.domain)
-    table.add_row("Action", intent.action)
+    table.add_row("Capability", intent.capability)
     table.add_row("Parameters", str(intent.parameters))
     table.add_row("Confidence", f"{intent.confidence:.0%}")
 

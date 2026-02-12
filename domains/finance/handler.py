@@ -13,7 +13,7 @@ Prohibitions:
 
 import logging
 
-from shared.models import Decision, ExecutionContext, Intent
+from shared.models import Decision, ExecutionContext, IntentOutput
 from domains.finance.context import ContextResolver
 from domains.finance.core import StrategyCore
 from skills.gateway import SkillGateway
@@ -29,7 +29,7 @@ class FinanceDomainHandler:
         self.strategy_core = StrategyCore()
         self.skill_gateway = skill_gateway
 
-    def execute(self, intent: Intent) -> Decision:
+    def execute(self, intent: IntentOutput) -> Decision:
         """
         Execute the full finance domain flow:
         1. Resolve DomainContext (deterministic)
@@ -37,7 +37,7 @@ class FinanceDomainHandler:
         3. Run Strategy Core (deterministic)
         4. Return Decision
         """
-        logger.info("Finance handler executing: action=%s", intent.action)
+        logger.info("Finance handler executing: capability=%s", intent.capability)
 
         # Step 1: Resolve domain context from symbol
         symbol = intent.parameters.get("symbol")
@@ -45,7 +45,8 @@ class FinanceDomainHandler:
         logger.debug("Resolved context: market=%s currency=%s", domain_context.market, domain_context.currency)
 
         # Step 2: Fetch data via skill gateway
-        skill_params = {**intent.parameters, "_action": intent.action}
+        # Map capability (intent) -> action (skill)
+        skill_params = {**intent.parameters, "_action": intent.capability}
         skill_data = self.skill_gateway.execute("mcp_finance", skill_params)
         logger.debug("Skill data received: success=%s", skill_data.get("success"))
 

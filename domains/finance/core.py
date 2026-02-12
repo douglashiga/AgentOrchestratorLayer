@@ -14,7 +14,7 @@ Critical Rules:
 
 import logging
 
-from shared.models import Decision, DomainContext, ExecutionContext, Intent
+from shared.models import Decision, DomainContext, ExecutionContext, IntentOutput
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class StrategyCore:
     """Deterministic strategy engine. Structures skill data into Decisions."""
 
-    def execute(self, intent: Intent, execution_context: ExecutionContext) -> Decision:
+    def execute(self, intent: IntentOutput, execution_context: ExecutionContext) -> Decision:
         """
         Process intent + execution context into a Decision.
         For v1: structures skill data into a clean Decision response.
@@ -33,10 +33,10 @@ class StrategyCore:
         # Check if skill returned an error
         if not skill_data.get("success", False):
             return Decision(
-                action=intent.action,
+                action=intent.capability,
                 success=False,
                 error=skill_data.get("error", "Unknown skill error"),
-                explanation=f"Failed to execute '{intent.action}'.",
+                explanation=f"Failed to execute '{intent.capability}'.",
             )
 
         # Build result with market context enrichment
@@ -65,7 +65,7 @@ class StrategyCore:
         explanation = self._generate_explanation(intent, result, domain_ctx)
 
         return Decision(
-            action=intent.action,
+            action=intent.capability,
             result=enriched_result,
             risk_metrics={},
             explanation=explanation,
@@ -73,14 +73,14 @@ class StrategyCore:
         )
 
     def _generate_explanation(
-        self, intent: Intent, result: dict, domain_ctx: DomainContext
+        self, intent: IntentOutput, result: dict, domain_ctx: DomainContext
     ) -> str:
         """Generate deterministic human-readable explanation."""
-        action = intent.action
+        capability = intent.capability
         params = intent.parameters
         symbol = params.get("symbol", params.get("query", "N/A"))
 
-        match action:
+        match capability:
             case "get_stock_price":
                 price = result.get("price", "N/A")
                 return f"{symbol} is currently trading at {price} {domain_ctx.currency}."
@@ -108,4 +108,4 @@ class StrategyCore:
                 query = params.get("query", symbol)
                 return f"Search results for '{query}'."
             case _:
-                return f"Executed '{action}' for {symbol}."
+                return f"Executed '{capability}' for {symbol}."
