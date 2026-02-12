@@ -17,9 +17,9 @@ from rich import box
 
 from entry.cli import CLIAdapter
 from conversation.manager import ConversationManager
-from intent.adapter import IntentAdapter
+from intent.adapter import IntentAdapter, FINANCE_CAPABILITIES
 from orchestrator.orchestrator import Orchestrator
-from registry.domain_registry import DomainRegistry
+from registry.domain_registry import HandlerRegistry
 from domains.finance.handler import FinanceDomainHandler
 from domains.general.handler import GeneralDomainHandler
 from skills.gateway import SkillGateway
@@ -79,9 +79,14 @@ def build_pipeline() -> tuple[CLIAdapter, ConversationManager, IntentAdapter, Or
     # Domains
     finance_handler = FinanceDomainHandler(skill_gateway=skill_gateway)
     general_handler = GeneralDomainHandler(model_selector=model_selector, model_name=OLLAMA_CHAT_MODEL)
-    domain_registry = DomainRegistry()
-    domain_registry.register("finance", finance_handler)
-    domain_registry.register("general", general_handler)
+    domain_registry = HandlerRegistry()
+    domain_registry.register_domain("finance", finance_handler)
+    domain_registry.register_domain("general", general_handler)
+
+    # Register capabilities
+    domain_registry.register_capability("chat", general_handler)
+    for cap in FINANCE_CAPABILITIES:
+        domain_registry.register_capability(cap, finance_handler)
 
     # Core
     orchestrator = Orchestrator(domain_registry=domain_registry)
@@ -92,14 +97,14 @@ def build_pipeline() -> tuple[CLIAdapter, ConversationManager, IntentAdapter, Or
     return cli_adapter, conversation_manager, intent_adapter, orchestrator
 
 
-def render_decision(decision) -> None:
-    """Render a Decision to the CLI using Rich."""
-    if decision.success:
+def render_result(intent, output) -> None:
+    """Render DomainOutput to the CLI using Rich."""
+    if output.status == "success":
         # Chat responses — just show the text
-        if decision.action == "chat":
+        if intent.capability == "chat":
             console.print()
             console.print(Panel(
-                Text(decision.explanation, style="white"),
+                Text(output.explanation, style="white"),
                 title="🤖 Assistant",
                 border_style="cyan",
                 box=box.ROUNDED,
@@ -109,17 +114,19 @@ def render_decision(decision) -> None:
         # Header
         console.print()
         console.print(Panel(
-            Text(decision.explanation, style="bold green"),
+            Text(output.explanation, style="bold green"),
             title="✅ Result",
             border_style="green",
             box=box.ROUNDED,
         ))
 
         # Result data table
-        result = decision.result
-        market_ctx = result.pop("_market_context", None)
+        result = output.result
+        # Copy to avoid mutating frozen pydantic if meaningful, but result is a dict
+        result_view = result.copy()
+        market_ctx = result_view.pop("_market_context", None)
 
-        if result:
+        if result_view:
             table = Table(
                 title="📊 Data",
                 box=box.SIMPLE_HEAVY,
@@ -129,7 +136,7 @@ def render_decision(decision) -> None:
             table.add_column("Field", style="bold white")
             table.add_column("Value", style="white")
 
-            for key, value in result.items():
+            for key, value in result_view.items():
                 if isinstance(value, dict):
                     for sub_key, sub_val in value.items():
                         table.add_row(f"  {sub_key}", str(sub_val))
@@ -145,8 +152,8 @@ def render_decision(decision) -> None:
             ctx_table = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
             ctx_table.add_column("", style="bold dim")
             ctx_table.add_column("", style="dim")
-            ctx_table.add_row("🏦 Exchange", f"{market_ctx.get('exchange', '')} ({market_ctx.get('country', market_ctx['market'])})")
-            ctx_table.add_row("💱 Currency", f"{market_ctx.get('currency_symbol', '')} {market_ctx['currency']}")
+            ctx_table.add_row("🏦 Exchange", f"{market_ctx.get('exchange', '')} ({market_ctx.get('country', market_ctx.get('market', ''))})")
+            ctx_table.add_row("💱 Currency", f"{market_ctx.get('currency_symbol', '')} {market_ctx.get('currency', '')}")
             ctx_table.add_row("🕐 Hours", f"{market_ctx.get('trading_hours', '')} ({market_ctx.get('timezone', '')})")
             ctx_table.add_row("📦 Lot/Settlement", f"{market_ctx.get('lot_size', '')} | {market_ctx.get('settlement', 'T+2')}")
             ctx_table.add_row("📋 Tax", f"{market_ctx.get('tax_model', '')} ({market_ctx.get('tax_rate_gains', '')})")
@@ -154,15 +161,17 @@ def render_decision(decision) -> None:
                 ctx_table.add_row("💡 Notes", market_ctx["tax_notes"])
             console.print(Panel(ctx_table, title="📍 Market Context", border_style="dim", box=box.ROUNDED))
     else:
+        # Failure case
+        error_msg = output.metadata.get("error", "Unknown error")
         console.print()
         console.print(Panel(
-            Text(f"Error: {decision.error}", style="bold red"),
+            Text(f"Error: {error_msg}", style="bold red"),
             title="❌ Failed",
             border_style="red",
             box=box.ROUNDED,
         ))
-        if decision.explanation:
-            console.print(Text(f"  ℹ️  {decision.explanation}", style="dim"))
+        if output.explanation:
+            console.print(Text(f"  ℹ️  {output.explanation}", style="dim"))
 
 
 def render_intent_debug(intent) -> None:
@@ -237,16 +246,16 @@ def main() -> None:
             # Show intent debug
             render_intent_debug(intent)
 
-            # Step 4-7: Orchestrator → Domain → Skills → Strategy → Decision
+            # Step 4-7: Orchestrator → Domain → Skills → Strategy → DomainOutput
             with console.status("[green]Executing...[/green]", spinner="dots"):
-                decision = orchestrator.process(intent)
+                output = orchestrator.process(intent)
 
-            # Step 8: Render decision
-            render_decision(decision)
+            # Step 8: Render output
+            render_result(intent, output)
 
             # Step 9: Persist conversation
             conversation.save(entry_request.session_id, "user", entry_request.input_text)
-            response_text = decision.explanation if decision.success else f"Error: {decision.error}"
+            response_text = output.explanation if output.status == "success" else f"Error: {output.metadata.get('error', 'unknown')}"
             conversation.save(entry_request.session_id, "assistant", response_text)
 
             console.print()

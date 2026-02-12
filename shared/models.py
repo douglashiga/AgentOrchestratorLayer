@@ -49,8 +49,10 @@ class ModelPolicy(BaseModel):
 class DomainOutput(BaseModel):
     """Standardized output from any Domain Handler."""
     model_config = {"frozen": True}
-    result: dict[str, Any]
-    confidence: float
+    status: str = Field(..., description="'success' or 'failure'")
+    result: dict[str, Any] = Field(default_factory=dict)
+    explanation: str = Field(default="")
+    confidence: float = Field(default=1.0)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

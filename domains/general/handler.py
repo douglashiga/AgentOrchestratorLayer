@@ -12,7 +12,7 @@ Performance:
 import logging
 
 from models.selector import ModelSelector
-from shared.models import Decision, IntentOutput, ModelPolicy
+from shared.models import Decision, DomainOutput, IntentOutput, ModelPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -31,26 +31,27 @@ class GeneralDomainHandler:
             json_mode=False, # Chat returns text, not JSON
         )
 
-    def execute(self, intent: IntentOutput) -> Decision:
+    def execute(self, intent: IntentOutput) -> DomainOutput:
         """Generate a conversational response."""
         user_message = intent.parameters.get("message", "")
 
         try:
             # We generate a session_id on the fly or could assume one from context if available
             response_text = self._generate_response(user_message)
-            return Decision(
-                action="chat",
+            return DomainOutput(
+                status="success",
                 result={"response": response_text},
                 explanation=response_text,
-                success=True,
+                confidence=1.0,
             )
         except Exception as e:
             logger.error("General domain error: %s", e)
-            return Decision(
-                action="chat",
-                success=False,
-                error=str(e),
+            return DomainOutput(
+                status="failure",
+                result={},
                 explanation="Failed to generate response.",
+                confidence=0.0,
+                metadata={"error": str(e)}
             )
 
     def _generate_response(self, user_message: str) -> str:

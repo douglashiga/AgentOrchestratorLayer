@@ -12,6 +12,7 @@ Failure → abort flow.
 """
 
 import logging
+import json
 from typing import Any
 
 from observability.logger import Observability
@@ -20,55 +21,59 @@ from shared.models import IntentOutput, ModelPolicy
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are an intent extraction engine. Your ONLY job is to analyze the user's message and return a structured JSON object.
+# Available actions that map to MCP Finance Server tools
+FINANCE_CAPABILITIES = [
+    "get_stock_price",
+    "get_historical_data",
+    "search_symbol",
+    "get_account_summary",
+    "get_option_chain",
+    "get_option_greeks",
+    "get_fundamentals",
+    "get_dividends",
+    "get_company_info",
+    "get_financial_statements",
+    "get_exchange_info",
+    "yahoo_search",
+]
+
+SYSTEM_PROMPT = f"""You are an intent extraction engine. Your ONLY job is to analyze the user's message and return a structured JSON object.
 
 You MUST respond with ONLY a valid JSON object. No explanations, no markdown, no extra text.
 
 The JSON must follow this exact schema:
-{
+{{
   "domain": "<domain>",
   "action": "<action>",
-  "parameters": {},
+  "parameters": {{}},
   "confidence": <float 0.0-1.0>
-}
+}}
 
 There are TWO domains:
 
 1. "general" — for greetings, casual conversation, questions about yourself, help requests, or anything NOT related to finance/stocks/markets.
    - action: "chat"
-   - parameters: {"message": "<the user's message>"}
+   - parameters: {{"message": "<the user's message>"}}
    - Examples: "oi", "hello", "como funciona?", "me ajuda", "quem é você?", "obrigado"
 
 2. "finance" — for anything related to stocks, markets, prices, options, fundamentals, dividends, company info, financial data.
    Available actions:
-   [
-     "get_stock_price",
-     "get_historical_data",
-     "search_symbol",
-     "get_account_summary",
-     "get_option_chain",
-     "get_option_greeks",
-     "get_fundamentals",
-     "get_dividends",
-     "get_company_info",
-     "get_financial_statements",
-     "get_exchange_info",
-     "yahoo_search"
-   ]
+{json.dumps(FINANCE_CAPABILITIES, indent=2)}
 
 Parameter rules for finance actions:
-- get_stock_price: {"symbol": "AAPL"}
-- get_historical_data: {"symbol": "AAPL", "duration": "1 M", "bar_size": "1 day"}
-- search_symbol: {"query": "Apple"}
-- get_account_summary: {}
-- get_option_chain: {"symbol": "AAPL"}
-- get_option_greeks: {"symbol": "AAPL", "date": "20240119", "strike": 150.0, "right": "C"}
-- get_fundamentals: {"symbol": "AAPL"}
-- get_dividends: {"symbol": "KO"}
-- get_company_info: {"symbol": "TSLA"}
-- get_financial_statements: {"symbol": "MSFT"}
-- get_exchange_info: {"symbol": "VOW3.DE"}
-- yahoo_search: {"query": "Brazilian banks"}
+- get_stock_price: {{"symbol": "AAPL"}}
+- get_historical_data: {{"symbol": "AAPL", "duration": "1 M", "bar_size": "1 day"}}
+- search_symbol: {{"query": "Apple"}}
+- get_account_summary: {{}}
+- get_option_chain: {{"symbol": "AAPL"}}
+- get_option_greeks: {{"symbol": "AAPL", "date": "20240119", "strike": 150.0, "right": "C"}}
+- get_fundamentals: {{"symbol": "AAPL"}}
+- get_dividends: {{"symbol": "KO"}}
+- get_company_info: {{"symbol": "TSLA"}}
+- get_financial_statements: {{"symbol": "MSFT"}}
+- get_exchange_info: {{"symbol": "VOW3.DE"}}
+- yahoo_search: {{"query": "Brazilian banks"}}
+
 
 Rules:
 1. FIRST decide the domain: if the message is about stocks, markets, prices, finance → "finance". Otherwise → "general".

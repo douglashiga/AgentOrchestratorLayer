@@ -13,7 +13,7 @@ Prohibitions:
 
 import logging
 
-from shared.models import Decision, ExecutionContext, IntentOutput
+from shared.models import Decision, DomainOutput, ExecutionContext, IntentOutput
 from domains.finance.context import ContextResolver
 from domains.finance.core import StrategyCore
 from skills.gateway import SkillGateway
@@ -29,13 +29,13 @@ class FinanceDomainHandler:
         self.strategy_core = StrategyCore()
         self.skill_gateway = skill_gateway
 
-    def execute(self, intent: IntentOutput) -> Decision:
+    def execute(self, intent: IntentOutput) -> DomainOutput:
         """
         Execute the full finance domain flow:
         1. Resolve DomainContext (deterministic)
         2. Fetch data via Skill Gateway
         3. Run Strategy Core (deterministic)
-        4. Return Decision
+        4. Return DomainOutput
         """
         logger.info("Finance handler executing: capability=%s", intent.capability)
 
@@ -58,4 +58,16 @@ class FinanceDomainHandler:
 
         # Step 4: Run strategy core (deterministic)
         decision = self.strategy_core.execute(intent, execution_context)
-        return decision
+        
+        # Step 5: Convert Decision -> DomainOutput
+        metadata = {"risk_metrics": decision.risk_metrics}
+        if decision.error:
+            metadata["error"] = decision.error
+
+        return DomainOutput(
+            status="success" if decision.success else "failure",
+            result=decision.result,
+            explanation=decision.explanation,
+            confidence=1.0,
+            metadata=metadata
+        )
