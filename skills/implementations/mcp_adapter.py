@@ -42,6 +42,12 @@ _ACTION_TO_TOOL: dict[str, str] = {
     "get_financial_statements": "get_financial_statements",
     "get_exchange_info": "get_exchange_info",
     "yahoo_search": "yahoo_search",
+    # Mapped to yahoo_search temporarily until MCP Server is updated
+    "get_top_gainers": "yahoo_search",
+    "get_top_losers": "yahoo_search",
+    "get_top_dividends": "yahoo_search",
+    "get_market_performance": "yahoo_search",
+    "compare_fundamentals": "yahoo_search",
 }
 
 
@@ -89,6 +95,17 @@ class MCPAdapter:
         tool_name = _ACTION_TO_TOOL.get(action)
         if not tool_name:
             return {"success": False, "error": f"Unknown action: '{action}'"}
+
+        # Temporary parameter adaptation for fallback mappings
+        if tool_name == "yahoo_search" and "query" not in parameters:
+            # Construct a query from available params for the fallback
+            parts = []
+            if action: parts.append(action.replace("_", " "))
+            if parameters.get("market"): parts.append(f"in {parameters['market']}")
+            if parameters.get("period"): parts.append(f"period {parameters['period']}")
+            if parameters.get("symbols"): parts.append(f"for {', '.join(parameters['symbols'])}")
+            
+            parameters["query"] = " ".join(parts)
 
         try:
             return self._submit(self._call_tool(tool_name, parameters))

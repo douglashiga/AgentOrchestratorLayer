@@ -35,6 +35,11 @@ FINANCE_CAPABILITIES = [
     "get_financial_statements",
     "get_exchange_info",
     "yahoo_search",
+    "get_top_gainers",
+    "get_top_losers",
+    "get_top_dividends",
+    "get_market_performance",
+    "compare_fundamentals",
 ]
 
 SYSTEM_PROMPT = f"""You are an intent extraction engine. Your ONLY job is to analyze the user's message and return a structured JSON object.
@@ -73,6 +78,11 @@ Parameter rules for finance actions:
 - get_financial_statements: {{"symbol": "MSFT"}}
 - get_exchange_info: {{"symbol": "VOW3.DE"}}
 - yahoo_search: {{"query": "Brazilian banks"}}
+- get_top_gainers: {{"market": "BR"}} (or "US", "SE")
+- get_top_losers: {{"market": "US", "period": "1d"}}
+- get_top_dividends: {{"market": "SE"}}
+- get_market_performance: {{"market": "US", "period": "YTD"}}
+- compare_fundamentals: {{"symbols": ["PETR4.SA", "VALE3.SA"]}}
 
 
 Rules:

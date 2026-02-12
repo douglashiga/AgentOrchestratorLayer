@@ -166,6 +166,17 @@ def render_result(intent, output) -> None:
             if market_ctx.get("tax_notes"):
                 ctx_table.add_row("💡 Notes", market_ctx["tax_notes"])
             console.print(Panel(ctx_table, title="📍 Market Context", border_style="dim", box=box.ROUNDED))
+
+    elif output.status == "clarification":
+        # Clarification needed
+        console.print()
+        console.print(Panel(
+            Text(output.explanation, style="bold yellow"),
+            title="❓ Clarification Needed",
+            border_style="yellow",
+            box=box.ROUNDED,
+        ))
+
     else:
         # Failure case
         error_msg = output.metadata.get("error", "Unknown error")
