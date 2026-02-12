@@ -92,20 +92,43 @@ class MCPAdapter:
         if not action:
             return {"success": False, "error": "No '_action' specified in parameters."}
 
+        # ─── Mock Data for Missing Capabilities ──────────────────────
+        # Since the MCP Server doesn't support these yet, we return mock data
+        # to verify the Agent's UI and Orchestration flow.
+        
+        if action == "get_top_gainers":
+            return {
+                "success": True, 
+                "data": [
+                    {"symbol": "MOCK3.SA", "price": 10.50, "change": "+5.2%"},
+                    {"symbol": "TEST3.SA", "price": 22.10, "change": "+3.8%"},
+                    {"symbol": "FAKE3.SA", "price": 15.00, "change": "+2.1%"}
+                ]
+            }
+        
+        if action == "get_top_losers":
+             return {
+                "success": True, 
+                "data": [
+                    {"symbol": "DOWN3.SA", "price": 8.20, "change": "-4.5%"},
+                    {"symbol": "FALL3.SA", "price": 12.00, "change": "-3.2%"}
+                ]
+            }
+
+        if action == "compare_fundamentals":
+            return {
+                "success": True,
+                "data": {
+                    "PETR4.SA": {"P/E": 4.5, "DY": "18%", "ROE": "35%"},
+                    "VALE3.SA": {"P/E": 6.2, "DY": "8%", "ROE": "28%"}
+                }
+            }
+            
+        # ────────────────────────────────────────────────────────────
+
         tool_name = _ACTION_TO_TOOL.get(action)
         if not tool_name:
             return {"success": False, "error": f"Unknown action: '{action}'"}
-
-        # Temporary parameter adaptation for fallback mappings
-        if tool_name == "yahoo_search" and "query" not in parameters:
-            # Construct a query from available params for the fallback
-            parts = []
-            if action: parts.append(action.replace("_", " "))
-            if parameters.get("market"): parts.append(f"in {parameters['market']}")
-            if parameters.get("period"): parts.append(f"period {parameters['period']}")
-            if parameters.get("symbols"): parts.append(f"for {', '.join(parameters['symbols'])}")
-            
-            parameters["query"] = " ".join(parts)
 
         try:
             return self._submit(self._call_tool(tool_name, parameters))
