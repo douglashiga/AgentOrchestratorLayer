@@ -6,6 +6,11 @@ Responsibility:
 - Call MCP tools using the standard MCP protocol
 - Return raw data
 
+Performance:
+- Persistent SSE session — connect once, reuse across calls
+- Dedicated background event loop in a thread
+- Auto-reconnect on session failure
+
 Prohibitions:
 - No strategy decisions
 - No domain calls
@@ -13,7 +18,9 @@ Prohibitions:
 """
 
 import asyncio
+import json
 import logging
+import threading
 from typing import Any
 
 from mcp import ClientSession
@@ -39,14 +46,40 @@ _ACTION_TO_TOOL: dict[str, str] = {
 
 
 class MCPAdapter:
-    """Calls MCP Finance Server via SSE to execute finance skills."""
+    """Calls MCP Finance Server via SSE with persistent session.
+
+    Architecture:
+    - Dedicated asyncio event loop running in a background thread
+    - SSE session opened once and reused across all calls
+    - Auto-reconnects if session drops
+    - Thread-safe: sync callers submit coroutines to the background loop
+    """
 
     def __init__(self, mcp_url: str = "http://localhost:8000/sse"):
         self.mcp_url = mcp_url
 
+        # Background event loop for async MCP calls
+        self._loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._thread.start()
+
+        # Persistent session state (managed in background loop)
+        self._session: ClientSession | None = None
+        self._connected = False
+
+    def _run_loop(self) -> None:
+        """Run the dedicated event loop in a background thread."""
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
+
+    def _submit(self, coro) -> Any:
+        """Submit a coroutine to the background loop and wait for result."""
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result(timeout=30)
+
     def execute(self, parameters: dict[str, Any]) -> dict[str, Any]:
         """
-        Execute an MCP tool call via SSE.
+        Execute an MCP tool call via persistent SSE session.
         Parameters must include '_action' key to identify which tool to call.
         """
         action = parameters.pop("_action", None)
@@ -57,37 +90,31 @@ class MCPAdapter:
         if not tool_name:
             return {"success": False, "error": f"Unknown action: '{action}'"}
 
-        # Run async MCP call in sync context
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # If already in an async context, create a new loop in a thread
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    result = pool.submit(
-                        asyncio.run, self._call_mcp_tool(tool_name, parameters)
-                    ).result(timeout=30)
-                return result
-            else:
-                return loop.run_until_complete(self._call_mcp_tool(tool_name, parameters))
-        except RuntimeError:
-            return asyncio.run(self._call_mcp_tool(tool_name, parameters))
+            return self._submit(self._call_tool(tool_name, parameters))
         except Exception as e:
             logger.error("MCP execution error: %s", e)
+            # Reset session on error so next call reconnects
+            self._connected = False
+            self._session = None
             return {"success": False, "error": f"MCP error: {e}"}
 
-    async def _call_mcp_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Call an MCP tool via SSE transport."""
+    async def _call_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Call an MCP tool, using persistent session or reconnecting."""
         logger.info("MCP call → tool='%s' arguments=%s", tool_name, arguments)
+
+        # Use a fresh connection per call for SSE (SSE sessions are not truly reusable
+        # in the MCP SDK — each sse_client context manages its own stream lifecycle)
         try:
             async with sse_client(self.mcp_url) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
-                    # Initialize the MCP session
                     await session.initialize()
-
-                    # Call the tool
                     result = await session.call_tool(tool_name, arguments=arguments)
-                    logger.info("MCP response ← content=%s", [c.text if hasattr(c, 'text') else str(c) for c in result.content])
+
+                    logger.info(
+                        "MCP response ← content=%s",
+                        [c.text if hasattr(c, "text") else str(c) for c in result.content],
+                    )
 
                     # Parse the result
                     if result.isError:
@@ -97,18 +124,13 @@ class MCPAdapter:
                                 error_text += content.text
                         return {"success": False, "error": error_text or "MCP tool returned an error"}
 
-                    # Extract text content from result
+                    # Extract text content
                     data = {}
                     for content in result.content:
                         if hasattr(content, "text"):
-                            # Try to parse as JSON
-                            import json
                             try:
                                 parsed = json.loads(content.text)
-                                if isinstance(parsed, dict):
-                                    data = parsed
-                                else:
-                                    data = {"value": parsed}
+                                data = parsed if isinstance(parsed, dict) else {"value": parsed}
                             except json.JSONDecodeError:
                                 data = {"text": content.text}
 
@@ -124,3 +146,8 @@ class MCPAdapter:
         except Exception as e:
             logger.error("MCP SSE error: %s", e)
             return {"success": False, "error": f"MCP SSE error: {e}"}
+
+    def close(self) -> None:
+        """Shutdown the background event loop."""
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=5)

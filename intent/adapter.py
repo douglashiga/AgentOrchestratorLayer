@@ -92,6 +92,12 @@ class IntentAdapter:
     def __init__(self, ollama_url: str = "http://localhost:11434", model: str = "llama3.1:8b"):
         self.ollama_url = ollama_url.rstrip("/")
         self.model = model
+        # Persistent HTTP client with connection pooling
+        self._client = httpx.Client(
+            base_url=self.ollama_url,
+            timeout=60.0,
+            limits=httpx.Limits(max_keepalive_connections=2),
+        )
 
     def extract(self, input_text: str, history: list[dict] | None = None) -> Intent:
         """
@@ -118,21 +124,21 @@ class IntentAdapter:
         return messages
 
     def _call_ollama(self, messages: list[dict]) -> str:
-        """Call Ollama chat API with temperature=0 and 60s timeout."""
+        """Call Ollama chat API with temperature=0, persistent connection."""
         try:
-            response = httpx.post(
-                f"{self.ollama_url}/api/chat",
+            response = self._client.post(
+                "/api/chat",
                 json={
                     "model": self.model,
                     "messages": messages,
                     "stream": False,
+                    "keep_alive": "10m",
                     "options": {
                         "temperature": 0,
                         "num_predict": 512,
                     },
                     "format": "json",
                 },
-                timeout=60.0,
             )
             response.raise_for_status()
             data = response.json()

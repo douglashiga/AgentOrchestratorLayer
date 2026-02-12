@@ -29,7 +29,7 @@ MARKET_US: dict = {
     "country": "United States",
     "currency": "USD",
     "currency_symbol": "$",
-    "exchange": "SMART",
+    "exchange": "NASDAQ",
     "exchange_suffix": "",
     "exchange_timezone": "America/New_York",
     "lot_size": 100,
