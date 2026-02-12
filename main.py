@@ -7,6 +7,8 @@ Wires all layers and runs the interactive CLI loop.
 import logging
 import sys
 
+logger = logging.getLogger(__name__)
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -27,7 +29,8 @@ from skills.implementations.mcp_adapter import MCPAdapter
 # ─── Configuration ──────────────────────────────────────────────
 
 OLLAMA_URL = "http://localhost:11434"
-OLLAMA_MODEL = "qwen2.5-coder:32b"
+OLLAMA_INTENT_MODEL = "llama3.1:8b"       # Fast model for intent extraction (JSON)
+OLLAMA_CHAT_MODEL = "qwen2.5-coder:32b"   # Full model for general conversation
 MCP_URL = "http://localhost:8000/sse"
 DB_PATH = "conversations.db"
 LOG_LEVEL = logging.INFO
@@ -46,6 +49,21 @@ def setup_logging() -> None:
     )
 
 
+def preload_models() -> None:
+    """Warm up Ollama models so first query is fast."""
+    import httpx
+    for model in (OLLAMA_INTENT_MODEL, OLLAMA_CHAT_MODEL):
+        try:
+            httpx.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={"model": model, "messages": [], "keep_alive": "10m"},
+                timeout=30.0,
+            )
+            logger.info("Preloaded model: %s", model)
+        except Exception:
+            logger.warning("Could not preload model: %s", model)
+
+
 def build_pipeline() -> tuple[CLIAdapter, ConversationManager, IntentAdapter, Orchestrator]:
     """Wire all layers together."""
     # Skills
@@ -56,14 +74,14 @@ def build_pipeline() -> tuple[CLIAdapter, ConversationManager, IntentAdapter, Or
 
     # Domains
     finance_handler = FinanceDomainHandler(skill_gateway=skill_gateway)
-    general_handler = GeneralDomainHandler(ollama_url=OLLAMA_URL, model=OLLAMA_MODEL)
+    general_handler = GeneralDomainHandler(ollama_url=OLLAMA_URL, model=OLLAMA_CHAT_MODEL)
     domain_registry = DomainRegistry()
     domain_registry.register("finance", finance_handler)
     domain_registry.register("general", general_handler)
 
     # Core
     orchestrator = Orchestrator(domain_registry=domain_registry)
-    intent_adapter = IntentAdapter(ollama_url=OLLAMA_URL, model=OLLAMA_MODEL)
+    intent_adapter = IntentAdapter(ollama_url=OLLAMA_URL, model=OLLAMA_INTENT_MODEL)
     conversation_manager = ConversationManager(db_path=DB_PATH)
     cli_adapter = CLIAdapter()
 
@@ -163,13 +181,17 @@ def main() -> None:
     console.print(Panel(
         Text.from_markup(
             "[bold cyan]Agent Orchestrator[/bold cyan]\n"
-            "[dim]Multi-layer finance agent • Ollama qwen2.5-coder:32b[/dim]\n"
+            f"[dim]Intent: {OLLAMA_INTENT_MODEL} • Chat: {OLLAMA_CHAT_MODEL}[/dim]\n"
             "[dim]Type your question or 'exit' to quit[/dim]"
         ),
         title="🤖",
         border_style="cyan",
         box=box.DOUBLE,
     ))
+
+    # Preload models into GPU memory
+    with console.status("[yellow]Loading models...[/yellow]", spinner="dots"):
+        preload_models()
 
     try:
         cli, conversation, intent_adapter, orchestrator = build_pipeline()

@@ -135,7 +135,8 @@ class IntentAdapter:
                     "keep_alive": "10m",
                     "options": {
                         "temperature": 0,
-                        "num_predict": 512,
+                        "num_predict": 128,
+                        "num_ctx": 1024,
                     },
                     "format": "json",
                 },
