@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  agent-orchestrator:
+    build: .
+    container_name: agent-orchestrator
+    environment:
+      - OLLAMA_URL=http://host.docker.internal:11434  # Access host's Ollama
+      - MCP_URL=http://mcp-finance:8000/sse           # Access MCP service by name
+    volumes:
+      - ./conversations.db:/app/conversations.db      # Persist SQLite DB
+    stdin_open: true                                  # Keep stdin open for CLI interaction
+    tty: true                                         # Allocate pseudo-TTY for CLI interaction
+    networks:
+      - agent-network
+
+  # Note: The user mentioned MCP is in *another* docker container.
+  # Ideally, we should join that existing network or use host networking.
+  # For now, I'm defining a network here, assuming we might bring MCP here or bridge it.
+  
+networks:
+  agent-network:
+    driver: bridge

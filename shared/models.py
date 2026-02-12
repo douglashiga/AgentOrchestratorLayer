@@ -31,7 +31,22 @@ class IntentOutput(BaseModel):
     confidence: float
     parameters: dict[str, Any] = Field(default_factory=dict)
 
+# ─── Planner Layer (New v3) ────────────────────────────────────
 
+class ExecutionStep(BaseModel):
+    """Atomic step in an execution plan."""
+    model_config = {"frozen": True}
+    id: int
+    capability: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    depends_on: list[int] = Field(default_factory=list)
+
+
+class ExecutionPlan(BaseModel):
+    """Structured plan for the Execution Engine."""
+    model_config = {"frozen": True}
+    execution_mode: str = Field(..., description="'sequential' or 'parallel'")
+    steps: list[ExecutionStep]
 # ─── Model Layer (Policy) ──────────────────────────────────────
 
 class ModelPolicy(BaseModel):

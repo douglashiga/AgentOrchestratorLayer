@@ -18,6 +18,8 @@ from rich import box
 from entry.cli import CLIAdapter
 from conversation.manager import ConversationManager
 from intent.adapter import IntentAdapter, FINANCE_CAPABILITIES
+from planner.service import PlannerService
+from execution.engine import ExecutionEngine
 from orchestrator.orchestrator import Orchestrator
 from registry.domain_registry import HandlerRegistry
 from domains.finance.handler import FinanceDomainHandler
@@ -27,12 +29,14 @@ from skills.registry import SkillRegistry
 from skills.implementations.mcp_adapter import MCPAdapter
 from models.selector import ModelSelector
 
+import os
+
 # ─── Configuration ──────────────────────────────────────────────
 
-OLLAMA_URL = "http://localhost:11434"
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_INTENT_MODEL = "llama3.1:8b"       # Fast model for intent extraction (JSON)
 OLLAMA_CHAT_MODEL = "qwen2.5-coder:32b"   # Full model for general conversation
-MCP_URL = "http://localhost:8000/sse"
+MCP_URL = os.getenv("MCP_URL", "http://localhost:8000/sse")
 DB_PATH = "conversations.db"
 LOG_LEVEL = logging.INFO
 
@@ -65,7 +69,7 @@ def preload_models() -> None:
             logger.warning("Could not preload model: %s", model)
 
 
-def build_pipeline() -> tuple[CLIAdapter, ConversationManager, IntentAdapter, Orchestrator]:
+def build_pipeline() -> tuple[CLIAdapter, ConversationManager, IntentAdapter, PlannerService, ExecutionEngine]:
     """Wire all layers together."""
     # Shared
     model_selector = ModelSelector(ollama_url=OLLAMA_URL)
@@ -91,10 +95,12 @@ def build_pipeline() -> tuple[CLIAdapter, ConversationManager, IntentAdapter, Or
     # Core
     orchestrator = Orchestrator(domain_registry=domain_registry)
     intent_adapter = IntentAdapter(model_selector=model_selector)
+    planner_service = PlannerService()
+    execution_engine = ExecutionEngine(orchestrator=orchestrator)
     conversation_manager = ConversationManager(db_path=DB_PATH)
     cli_adapter = CLIAdapter()
 
-    return cli_adapter, conversation_manager, intent_adapter, orchestrator
+    return cli_adapter, conversation_manager, intent_adapter, planner_service, execution_engine
 
 
 def render_result(intent, output) -> None:
@@ -207,13 +213,17 @@ def main() -> None:
         preload_models()
 
     try:
-        cli, conversation, intent_adapter, orchestrator = build_pipeline()
+        cli, conversation, intent_adapter, planner, engine = build_pipeline()
     except Exception as e:
         console.print(f"[bold red]Failed to initialize pipeline:[/] {e}")
         sys.exit(1)
 
     console.print(f"[dim]Session: {cli.session_id}[/dim]")
-    console.print(f"[dim]Domains: {orchestrator.domain_registry.registered_domains}[/dim]")
+    # The orchestrator variable is not directly returned by build_pipeline anymore.
+    # If domain_registry is needed, it would need to be accessed via engine.orchestrator.domain_registry
+    # For now, commenting out or adjusting this line based on the new assignment.
+    # Assuming the user wants to keep the print, we'll access it via the engine.
+    console.print(f"[dim]Domains: {engine.orchestrator.domain_registry.registered_domains}[/dim]")
     console.print()
 
     while True:
@@ -246,11 +256,16 @@ def main() -> None:
             # Show intent debug
             render_intent_debug(intent)
 
-            # Step 4-7: Orchestrator → Domain → Skills → Strategy → DomainOutput
-            with console.status("[green]Executing...[/green]", spinner="dots"):
-                output = orchestrator.process(intent)
+            # Step 4: Planner (Decomposition)
+            with console.status("[blue]Planning...[/blue]", spinner="dots"):
+                plan = planner.generate_plan(intent)
+                logger.info("Plan generated: %d steps", len(plan.steps))
 
-            # Step 8: Render output
+            # Step 5-8: Execution Engine (Orchestrator + Domain + Model)
+            with console.status("[green]Executing...[/green]", spinner="dots"):
+                output = engine.execute_plan(plan, original_intent=intent)
+
+            # Step 9: Render output
             render_result(intent, output)
 
             # Step 9: Persist conversation
