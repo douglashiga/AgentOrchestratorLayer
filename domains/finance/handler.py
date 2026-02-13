@@ -47,6 +47,9 @@ class FinanceDomainHandler:
         matching the intent capability.
         """
         try:
+            # 0. Apply Defaults (Mutates intent.parameters in place)
+            self._resolve_parameters(intent, intent.parameters)
+
             # 1. Dynamic Dispatch to Typed Methods
             method_name = intent.capability
             if hasattr(self, method_name):
@@ -211,3 +214,24 @@ class FinanceDomainHandler:
         # (Legacy clarification logic could go here if we wanted to keep purely string-based checks)
         
         return await self._run_pipeline(intent, intent.parameters)
+
+    def _resolve_parameters(self, intent: IntentOutput, params: dict) -> None:
+        """
+        Apply default values from metadata to missing parameters.
+        Mutates `params` in-place.
+        """
+        if not self.registry:
+            return
+
+        metadata = self.registry.get_metadata(intent.capability)
+        if not metadata:
+            return
+
+        # Apply defaults
+        for key, value in metadata.items():
+            if key.startswith("default_"):
+                param_name = key.replace("default_", "")
+                if param_name not in params or params[param_name] is None:
+                    params[param_name] = value
+                    logger.info("Applied default parameter: %s=%s", param_name, value)
+

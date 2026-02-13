@@ -138,8 +138,28 @@ class StrategyCore:
                   
                   explanation = template.format(**ctx)
                   
+                  explanation = template.format(**ctx)
+                  
                   if items_count > 0 and "{count}" not in template:
                       explanation += f" Found {items_count} items."
+
+                  # ─── Default Value Transparency ──────────────────────
+                  # Check if any params match their default values in metadata
+                  defaults_info = []
+                  for key, value in metadata.items():
+                      if key.startswith("default_"):
+                          param_name = key.replace("default_", "")
+                          # Check if current param value matches default
+                          if params.get(param_name) == value:
+                              # Get valid values for this param if available
+                              valid_values = metadata.get("valid_values", {}).get(param_name)
+                              if valid_values:
+                                  defaults_info.append(f"{param_name.upper()}={value} (Valid: {', '.join(valid_values)})")
+                              else:
+                                  defaults_info.append(f"{param_name.upper()}={value}")
+                  
+                  if defaults_info:
+                      explanation += f" [Default: {' | '.join(defaults_info)}]"
                       
                   return explanation
 

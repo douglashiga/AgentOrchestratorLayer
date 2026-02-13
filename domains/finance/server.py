@@ -8,6 +8,14 @@ Responsibility:
 
 import logging
 import os
+import sys
+from pathlib import Path
+
+# Add project root to sys.path to allow absolute imports when run directly
+root_dir = Path(__file__).parent.parent.parent
+if str(root_dir) not in sys.path:
+    sys.path.append(str(root_dir))
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -69,6 +77,7 @@ def health_check():
 # This enriches the raw MCP tools with Orchestrator-specific UI/Logic hints.
 METADATA_OVERRIDES = {
     "get_stock_price": {
+        "default_market": "SE",
         "explanation_template": "{symbol} is trading at {result[price]} {currency}."
     },
     "get_historical_data": {
@@ -76,27 +85,35 @@ METADATA_OVERRIDES = {
     },
     "get_stock_screener": {
         "market_required": True,
+        "default_market": "SE",
         "valid_values": {"market": ["US", "BR", "SE", "HK"]},
         "explanation_template": "Stock screener results for {result[market]} market."
     },
     "get_top_gainers": {
         "market_required": True,
+        "default_market": "SE",
+        "default_period": "1d",
         "valid_values": {"market": ["US", "BR", "SE"], "period": ["1d", "5d", "1mo", "3mo", "1y"]},
         "explanation_template": "Top gainers in {result[market]} for {result[period]}."
     },
     "get_top_losers": {
         "market_required": True,
+        "default_market": "SE",
+        "default_period": "1d",
         "valid_values": {"market": ["US", "BR", "SE"], "period": ["1d", "5d", "1mo", "3mo", "1y"]},
         "explanation_template": "Top losers in {result[market]} for {result[period]}."
     },
     "get_top_dividend_payers": {
         "market_required": True,
+        "default_market": "SE",
         "valid_values": {"market": ["US", "BR", "SE"]},
         "explanation_template": "High yield stocks in {result[market]}."
     },
     "get_technical_signals": {
         "market_required": True,
         "signal_required": True,
+        "default_market": "SE",
+        "default_signal_type": "rsi_oversold", 
         "valid_values": {"market": ["US", "BR", "SE"], "signal_type": ["rsi_oversold", "rsi_overbought", "macd_cross"]},
         "explanation_template": "Stocks showing {params[signal_type]} signals in {result[market]}."
     },
