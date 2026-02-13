@@ -14,9 +14,11 @@ Prohibitions:
 """
 
 import logging
+import inspect
 
 from shared.models import DomainOutput, IntentOutput, ModelPolicy
 from registry.domain_registry import HandlerRegistry
+from models.selector import ModelSelector
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +77,11 @@ class Orchestrator:
 
         # Delegate to domain handler
         try:
-            domain_output = await handler.execute(intent)
+            handler_result = handler.execute(intent)
+            if inspect.isawaitable(handler_result):
+                domain_output = await handler_result
+            else:
+                domain_output = handler_result
             logger.info("Orchestrator received output: status=%s", domain_output.status)
             return domain_output
         except Exception as e:

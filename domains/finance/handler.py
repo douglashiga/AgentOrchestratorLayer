@@ -12,6 +12,7 @@ Prohibitions:
 """
 
 import logging
+from typing import Any
 
 from shared.models import Decision, DomainOutput, ExecutionContext, IntentOutput
 from domains.finance.context import ContextResolver
@@ -24,7 +25,6 @@ from domains.finance.schemas import (
 )
 from pydantic import ValidationError
 from typing import get_type_hints
-import inspect
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +47,8 @@ class FinanceDomainHandler:
         matching the intent capability.
         """
         try:
-            # 0. Apply Defaults (Mutates intent.parameters in place)
-            self._resolve_parameters(intent, intent.parameters)
+            # 0. Apply defaults without mutating shared state
+            resolved_params = self._resolve_parameters(intent, dict(intent.parameters))
 
             # 1. Dynamic Dispatch to Typed Methods
             method_name = intent.capability
@@ -63,7 +63,7 @@ class FinanceDomainHandler:
                         
                         if input_model:
                             # Validate inputs against schema
-                            validated_params = input_model(**intent.parameters)
+                            validated_params = input_model(**resolved_params)
                             # Call specific method with Intent AND Validated Params
                             return await method(intent, validated_params)
                     except ValidationError as ve:
@@ -85,7 +85,7 @@ class FinanceDomainHandler:
                         )
 
             # 2. Fallback to Generic Execution (Legacy)
-            return await self._generic_execute(intent)
+            return await self._generic_execute(intent, resolved_params)
 
         except Exception as e:
             logger.error("Finance execution failed: %s", e, exc_info=True)
@@ -176,7 +176,8 @@ class FinanceDomainHandler:
                 skill_data=skill_data,
             )
 
-            decision = self.strategy_core.execute(intent, execution_context, registry=self.registry)
+            intent_for_decision = intent.model_copy(update={"parameters": params})
+            decision = self.strategy_core.execute(intent_for_decision, execution_context, registry=self.registry)
             
             # ─── 4. Output Generation ────────────────────────────────
             output_metadata = {"risk_metrics": decision.risk_metrics}
@@ -201,7 +202,7 @@ class FinanceDomainHandler:
                 metadata={"error": str(e)}
             )
 
-    async def _generic_execute(self, intent: IntentOutput) -> DomainOutput:
+    async def _generic_execute(self, intent: IntentOutput, resolved_params: dict) -> DomainOutput:
         """Legacy generic execution path - delegates to unified pipeline."""
         if intent.capability == "chat":
             return DomainOutput(
@@ -213,19 +214,19 @@ class FinanceDomainHandler:
         # For generic execution, run manual metadata checks that Pydantic would have caught
         # (Legacy clarification logic could go here if we wanted to keep purely string-based checks)
         
-        return await self._run_pipeline(intent, intent.parameters)
+        return await self._run_pipeline(intent, resolved_params)
 
-    def _resolve_parameters(self, intent: IntentOutput, params: dict) -> None:
+    def _resolve_parameters(self, intent: IntentOutput, params: dict) -> dict:
         """
         Apply default values from metadata to missing parameters.
         Mutates `params` in-place.
         """
         if not self.registry:
-            return
+            return params
 
         metadata = self.registry.get_metadata(intent.capability)
         if not metadata:
-            return
+            return params
 
         # Apply defaults
         for key, value in metadata.items():
@@ -234,4 +235,4 @@ class FinanceDomainHandler:
                 if param_name not in params or params[param_name] is None:
                     params[param_name] = value
                     logger.info("Applied default parameter: %s=%s", param_name, value)
-
+        return params

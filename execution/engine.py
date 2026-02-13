@@ -50,7 +50,7 @@ class ExecutionEngine:
                 domain=original_intent.domain, # Inherit broad domain
                 capability=step.capability,
                 confidence=original_intent.confidence, # Inherit confidence
-                parameters=step.params
+                parameters=dict(step.params)
             )
 
             try:

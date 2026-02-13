@@ -29,7 +29,7 @@ class PlannerService:
         step = ExecutionStep(
             id=1,
             capability=intent.capability,
-            params=intent.parameters,
+            params=dict(intent.parameters),
             depends_on=[]
         )
 

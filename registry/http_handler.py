@@ -26,7 +26,7 @@ class HttpDomainHandler:
         if auth_token:
             self.headers["Authorization"] = f"Bearer {auth_token}"
 
-    def execute(self, intent: IntentOutput) -> DomainOutput:
+    async def execute(self, intent: IntentOutput) -> DomainOutput:
         """
         Execute intent via Remote Domain Protocol.
         POST /execute
@@ -37,8 +37,8 @@ class HttpDomainHandler:
         try:
             logger.info("Calling remote domain: %s capability=%s", url, intent.capability)
             
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(url, json=payload, headers=self.headers)
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(url, json=payload, headers=self.headers)
                 
                 if response.status_code != 200:
                     logger.error("Remote domain error %s: %s", response.status_code, response.text)
