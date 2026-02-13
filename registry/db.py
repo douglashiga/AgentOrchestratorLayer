@@ -127,7 +127,7 @@ class RegistryDB:
         """List capabilities, optionally filtered by domain."""
         with self._get_conn() as conn:
             query = """
-                SELECT c.name as capability, d.name as domain, d.type, d.config, c.input_schema, c.metadata
+                SELECT c.name as capability, c.description, d.name as domain, d.type, d.config, c.input_schema, c.metadata
                 FROM capabilities c
                 JOIN domains d ON c.domain_id = d.id
                 WHERE d.enabled = 1

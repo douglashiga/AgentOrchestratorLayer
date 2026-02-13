@@ -19,7 +19,6 @@ if str(root_dir) not in sys.path:
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 
 from shared.models import IntentOutput, DomainOutput
 from domains.finance.handler import FinanceDomainHandler
@@ -81,7 +80,7 @@ METADATA_OVERRIDES = {
         "explanation_template": "{symbol} is trading at {result[price]} {currency}."
     },
     "get_historical_data": {
-        "explanation_template": "Historical data for {symbol} ({params[duration]})."
+        "explanation_template": "Historical data for {symbol} ({params[period]})."
     },
     "get_stock_screener": {
         "market_required": True,
@@ -193,7 +192,7 @@ def get_manifest():
     }
 
 @app.post("/execute", response_model=DomainOutput)
-def execute_intent(intent: IntentOutput):
+async def execute_intent(intent: IntentOutput):
     """
     Standard Domain Protocol Execution Endpoint.
     Receives IntentOutput -> Returns DomainOutput.
@@ -202,8 +201,7 @@ def execute_intent(intent: IntentOutput):
         raise HTTPException(status_code=503, detail="Handler not initialized")
     
     try:
-        # FinanceHandler is synchronous, FastAPI runs this in a threadpool
-        return handler.execute(intent)
+        return await handler.execute(intent)
     except Exception as e:
         logger.error("Execution error: %s", e, exc_info=True)
         return DomainOutput(

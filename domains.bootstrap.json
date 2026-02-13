@@ -1,0 +1,20 @@
+[
+  {
+    "name": "finance",
+    "type": "remote_http",
+    "config": {
+      "url": "http://finance-server:8001",
+      "timeout": 30.0
+    },
+    "sync_capabilities": true
+  },
+  {
+    "name": "communication",
+    "type": "remote_http",
+    "config": {
+      "url": "http://communication-domain:8002",
+      "timeout": 15.0
+    },
+    "sync_capabilities": true
+  }
+]

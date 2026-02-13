@@ -1,171 +1,190 @@
-# 🤖 Agent Orchestrator Layer
+# Agent Orchestrator Layer
 
-Multi-layer, multi-domain agent orchestrator with **deterministic core** and **isolated LLM**. Built in Python, powered by [Ollama](https://ollama.ai) and integrated with [MCP Finance Server](https://github.com/douglashiga/MCP-Finance-Server).
+Multi-layer, multi-domain orchestrator with deterministic execution, LLM-based intent extraction, and remote domain integration via HTTP (`/manifest`, `/openapi.json`, `/execute`).
 
-## 📐 Architecture
+## What Was Added
 
-### 8-Layer Reliability Architecture
+- Real **TaskDecomposer** for multi-domain planning.
+- **DAG/parallel execution engine** with dependency handling.
+- **Combined output** for multi-step execution.
+- New standalone **communication domain** (Telegram) in its own service/container.
+- Dynamic domain injection via DB/bootstrap (no hardcoded finance/communication domains).
+- Runtime capability discovery so the assistant can answer "what can you do?" by domain.
+
+## Architecture
 
 ```mermaid
 graph TD
-    User((User)) --> Entry[1. Entry Layer]
-    Entry --> Intent[2. Intent Layer]
-    Intent --> Planner[3. Planner Layer]
-    Planner --> Exec[4. Execution Engine]
-    Exec --> Orch[5. Orchestrator]
-    Orch --> Domain[6. Domain Layer]
-    Domain --> Validator{Schema Valid?}
-    Validator -->|Yes| Exec
-    Validator -->|No| Model[7. Model Layer]
-    Model -->|Retry/Fallback| Domain
-    Exec --> Obs[8. Observability Layer]
-    Obs --> User
+    User((User)) --> Entry[Entry Layer]
+    Entry --> Intent[Intent Adapter]
+    Intent --> Planner[Planner + TaskDecomposer]
+    Planner --> Exec[Execution Engine DAG]
+    Exec --> Orch[Orchestrator]
+    Orch --> Reg[Registry/Handler Mapping]
+    Orch --> DomA[Remote Domain: Finance]
+    Orch --> DomB[Remote Domain: Communication]
+    Exec --> Combiner[Result Combiner]
+    Combiner --> Output[Combined DomainOutput]
 ```
 
-### Layers Responsibilities
+## Multi-Domain Flow (Example)
 
-| Layer | Responsibility | Key Feature |
-|-------|---------------|-------------|
-| **1. Entry** | I/O Normalization | Protocol Agnostic (CLI/API) |
-| **2. Intent** | Classification & Confidence | Strict `IntentOutput` Schema |
-| **3. Planner** | Task Decomposition | Structured Execution Plans |
-| **4. Execution** | Run Management | Timeouts, Dependencies, Parallelism |
-| **5. Orchestrator** | Routing & Validation | Capability-based Routing (HandlerRegistry) |
-| **6. Domain** | Business Logic | Isolated & Deterministic (`DomainOutput`) |
-| **7. Model** | LLM Abstraction | Policies (Retry, Timeout, Fallback) |
-| **8. Observability** | Insight & Debugging | Structured Logging & Metrics |
+Query example:
+- `pegue o preco da AAPL e envie no telegram`
 
-### Anti-Hallucination & Robustness Rules
- 
- 1. **Strict Schemas**: All LLM outputs must be valid JSON matching Pydantic models.
- 2. **Confidence Gating**: Intents with confidence < 0.98 are rejected or trigger clarification.
- 3. **No Logic in LLM**: Models only classify or format; they never execute business rules.
- 4. **Timeouts**: Mandatory timeouts at Execution and Model layers.
- 5. **Retries**: Max 3 schema validation retries before failure.
- 6. **Capability Routing**: Routing based on specific capabilities (e.g., `get_stock_price`) rather than broad domains.
- 
- ### Key Features
- 
- - **Dynamic Domain Architecture**: Capabilities are loaded from a SQLite Registry, allowing "zero-code" integration of new tools via the Finance Server.
- - **Metadata-Driven Explanations**: Explanation templates are stored in the Registry, enabling dynamic, data-driven responses without code changes.
- - **Multilingual Context**: The system detects the user's language (e.g., Portuguese) from the original query and responds/clarifies accordingly.
- - **Context-Aware Clarification**: Ambiguous queries trigger specific follow-up questions (e.g., "Which market? US, BR, SE?"), and short answers (e.g., "BR") are correctly mapped to the context.
+Plan generated:
+1. `finance.get_stock_price` (required)
+2. `communication.send_telegram_message` (depends on step 1, optional)
 
----
+Step parameter interpolation supported:
+- `${1.explanation}`
+- `${1.result.price}`
+- `${ENV:TELEGRAM_DEFAULT_CHAT_ID}`
 
-## 📦 Project Structure
+## Project Structure
 
-```
-AgentsOrchstratorLayer/
-├── main.py                          # CLI entrypoint, wires all layers
-├── pyproject.toml                   # Dependencies
-├── Dockerfile                       # Docker image definition
-├── docker-compose.yml               # Docker services orchestration
+```text
+AgentOrchestratorLayer/
+├── main.py
+├── docker-compose.yml
+├── domains.bootstrap.json
 ├── shared/
-│   └── models.py                    # Pydantic models (IntentOutput, DomainOutput, etc.)
-├── entry/
-│   └── cli.py                       # CLI adapter
-├── conversation/
-│   └── manager.py                   # SQLite state manager
-├── intent/
-│   └── adapter.py                   # Ollama LLM intent extraction
-├── planner/                         # (Phase 3) Task decomposition
-├── execution/                       # (Phase 3) Execution engine
+│   └── models.py
+├── planner/
+│   ├── service.py
+│   └── task_decomposer.py
+├── execution/
+│   ├── engine.py
+│   └── result_combiner.py
 ├── orchestrator/
-│   └── orchestrator.py              # Capability-based router
+│   └── orchestrator.py
 ├── registry/
-│   └── domain_registry.py           # HandlerRegistry (Capabilities & Domains)
+│   ├── db.py
+│   ├── loader.py
+│   ├── http_handler.py
+│   └── domain_registry.py
 ├── domains/
-│   ├── general/
-│   │   └── handler.py               # Conversational responses
-│   └── finance/
-│       ├── handler.py               # Finance domain orchestration
-│       ├── context.py               # Market/currency resolver
-│       └── core.py                  # Deterministic strategy engine
-├── models/
-│   └── selector.py                  # LLM Abstraction Layer
-├── observability/
-│   └── logger.py                    # Structured Logging
-└── skills/
-    ├── gateway.py                   # Controlled skill access
-    ├── registry.py                  # Skill lookup
-    └── implementations/
-        └── mcp_adapter.py           # MCP Finance Server (SSE)
+│   ├── finance/
+│   └── general/
+├── communication-domain/          # Standalone service (can live in separate repo)
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── app/
+│       ├── main.py
+│       ├── models.py
+│       └── telegram_service.py
+├── scripts/
+│   ├── test_telegram_send_simple.py
+│   └── test_stock_price_notify_simple.py
+└── test_*.py
 ```
 
----
+## Communication Domain (Standalone)
 
-## 🚀 Installation & Running
+Path:
+- `communication-domain/`
 
-### Prerequisites
+Endpoints:
+- `GET /health`
+- `GET /manifest`
+- `GET /openapi.json`
+- `POST /execute`
 
-- **Python 3.11+** (or Docker)
-- **Ollama** with `llama3.1:8b` (Intent) and `qwen2.5-coder:32b` (Chat) models
-- **MCP Finance Server** (running locally or in Docker)
+Capabilities:
+- `send_telegram_message`
+- `send_telegram_group_message`
 
-### Option A: Local Python
+Telegram env vars:
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_DEFAULT_CHAT_ID`
+- `TELEGRAM_DRY_RUN`
+- `TELEGRAM_ALLOWED_CHAT_IDS`
+- `TELEGRAM_TIMEOUT_SECONDS`
 
-1. **Clone & Install**:
-   ```bash
-   git clone https://github.com/douglashiga/AgentsOrchstratorLayer.git
-   cd AgentsOrchstratorLayer
-   pip install -r requirements.txt
-   ```
+## Dynamic Domain Bootstrap (No Hardcode)
 
-2. **Setup Ollama**:
-   ```bash
-   ollama pull llama3.1:8b
-   ollama pull qwen2.5-coder:32b
-   ollama serve
-   ```
+Domains are injected into `registry.db` at startup from:
+1. `BOOTSTRAP_DOMAINS_JSON` (highest priority)
+2. `BOOTSTRAP_DOMAINS_FILE`
 
-3. **Run**:
-   ```bash
-   # Optional: Set MCP URL if different
-   export MCP_URL="http://localhost:8000/sse"
-   python main.py
-   ```
+Example `domains.bootstrap.json`:
 
-### Option B: Docker (Recommended)
-
-1. **Build & Run**:
-   ```bash
-   docker-compose up --build
-   ```
-
-   *Note: Ensure your MCP Finance Server is running and accessible. Update `docker-compose.yml` environment variables if needed.*
-
----
-
-## 💬 Usage
-
-```
-╔══════════════════════════════════════════════════════════════════════════════════════════════ 🤖 ══════════════════════════════════════════════════════════════════════════════════════════════╗
-║ Agent Orchestrator                                                                                                                                                                             ║
-║ Intent: llama3.1:8b • Chat: qwen2.5-coder:32b                                                                                                                                                  ║
-║ Type your question or 'exit' to quit                                                                                                                                                           ║
-╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
-
-You → qual o preço da AAPL?
-🧠 Intent: domain=finance, capability=get_stock_price, symbol=AAPL, confidence=90%
-✅ Result: AAPL is currently trading at 150.25 USD
-
-You → exit
-Goodbye! 👋
+```json
+[
+  {
+    "name": "finance",
+    "type": "remote_http",
+    "config": {
+      "url": "http://finance-server:8001",
+      "timeout": 30.0
+    },
+    "sync_capabilities": true
+  },
+  {
+    "name": "communication",
+    "type": "remote_http",
+    "config": {
+      "url": "http://communication-domain:8002",
+      "timeout": 15.0
+    },
+    "sync_capabilities": true
+  }
+]
 ```
 
-## ⚙️ Configuration
+## Configuration
 
-Configuration is managed via Environment Variables (with defaults in `main.py`).
+### Agent env vars
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OLLAMA_URL` | `http://localhost:11434` | URL for Ollama API |
-| `MCP_URL` | `http://localhost:8000/sse` | URL for MCP Finance Server |
-| `DB_PATH` | `conversations.db` | Path to SQLite database |
+- `OLLAMA_URL` (default: `http://localhost:11434`)
+- `MCP_URL` (default: `http://localhost:8000/sse`)
+- `DB_PATH` (default: `agent.db`)
+- `REGISTRY_DB_PATH` (default: `registry.db`)
+- `BOOTSTRAP_DOMAINS_JSON`
+- `BOOTSTRAP_DOMAINS_FILE`
+- `AUTO_SYNC_REMOTE_CAPABILITIES` (default: `true`)
+- `SEED_CORE_DEFAULTS` (default: `true`)
 
----
+### Communication domain env vars
 
-## 📄 License
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_DEFAULT_CHAT_ID`
+- `TELEGRAM_DRY_RUN` (default recommended: `true` for first runs)
+- `TELEGRAM_ALLOWED_CHAT_IDS`
+- `TELEGRAM_TIMEOUT_SECONDS`
+
+## Run
+
+### Docker (recommended)
+
+```bash
+docker-compose up --build
+```
+
+This starts:
+- `finance-server` on `:8001`
+- `communication-domain` on `:8002`
+- `agent`
+
+## Simple Tests
+
+### 1) Telegram send (communication domain only)
+
+```bash
+python3 scripts/test_telegram_send_simple.py
+```
+
+### 2) Stock price + Telegram notify (TaskDecomposer + DAG)
+
+```bash
+python3 scripts/test_stock_price_notify_simple.py
+```
+
+## Notes
+
+- The communication domain is standalone and containerized separately. You can move `communication-domain/` to another repository without changing orchestrator architecture.
+- Capability discovery is runtime-driven from registry/manifest, enabling domain-based responses for "what can you do?".
+
+## License
 
 MIT

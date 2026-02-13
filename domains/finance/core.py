@@ -139,8 +139,6 @@ class StrategyCore:
                   
                   explanation = template.format(**ctx)
                   
-                  explanation = template.format(**ctx)
-                  
                   if items_count > 0 and "{count}" not in template:
                       explanation += f" Found {items_count} items."
 

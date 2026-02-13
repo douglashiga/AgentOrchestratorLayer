@@ -13,6 +13,19 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  communication-domain:
+    build:
+      context: ./communication-domain
+    container_name: communication-domain
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_DEFAULT_CHAT_ID=${TELEGRAM_DEFAULT_CHAT_ID:-}
+      - TELEGRAM_DRY_RUN=${TELEGRAM_DRY_RUN:-true}
+      - TELEGRAM_TIMEOUT_SECONDS=${TELEGRAM_TIMEOUT_SECONDS:-10}
+      - TELEGRAM_ALLOWED_CHAT_IDS=${TELEGRAM_ALLOWED_CHAT_IDS:-}
+    ports:
+      - "8002:8002"
+
   agent:
     build: .
     container_name: finance-agent
@@ -23,12 +36,16 @@ services:
       - REGISTRY_DB_PATH=/app/registry.db
       - DB_PATH=/app/agent.db
       - MCP_URL=${MCP_URL:-http://host.docker.internal:8000/sse}
+      - BOOTSTRAP_DOMAINS_FILE=/app/domains.bootstrap.json
+      - AUTO_SYNC_REMOTE_CAPABILITIES=true
       - PYTHONPATH=/app
     volumes:
       - ./registry.db:/app/registry.db
       - ./agent.db:/app/agent.db
+      - ./domains.bootstrap.json:/app/domains.bootstrap.json:ro
     depends_on:
       - finance-server
+      - communication-domain
     command: python main.py run
     extra_hosts:
       - "host.docker.internal:host-gateway"

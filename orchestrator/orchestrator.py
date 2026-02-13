@@ -46,8 +46,10 @@ class Orchestrator:
                     intent.domain, intent.capability, intent.confidence)
 
         # 1. Confidence Gating (User Requirement: 98% threshold)
+        # Keep general-domain responses responsive even when fallback confidence is low.
         CONFIDENCE_THRESHOLD = 0.98
-        if intent.confidence < CONFIDENCE_THRESHOLD:
+        is_general_domain = intent.domain == "general"
+        if intent.confidence < CONFIDENCE_THRESHOLD and not is_general_domain:
             logger.warning("Intent confidence too low: %.2f < %.2f", intent.confidence, CONFIDENCE_THRESHOLD)
             
             question = self._generate_clarification_question(intent)

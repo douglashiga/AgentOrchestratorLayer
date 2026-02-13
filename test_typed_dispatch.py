@@ -10,63 +10,49 @@ from skills.gateway import SkillGateway
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("test_typed")
 
-async def test_missing_param_clarification():
-    print("\n--- Testing Missing Param (Market) in get_top_gainers ---")
-    
-    # Mock Gateway & Registry
-    gateway = MagicMock(spec=SkillGateway)
-    registry = MagicMock()
-    registry.get_metadata.return_value = {}  # No overrides needed for this test checking Pydantic
+def test_missing_param_clarification():
+    async def _run() -> None:
+        gateway = MagicMock(spec=SkillGateway)
+        registry = MagicMock()
+        registry.get_metadata.return_value = {}
 
-    handler = FinanceDomainHandler(skill_gateway=gateway, registry=registry)
+        handler = FinanceDomainHandler(skill_gateway=gateway, registry=registry)
+        intent = IntentOutput(
+            domain="finance",
+            capability="get_top_gainers",
+            confidence=1.0,
+            parameters={"limit": 5}
+        )
 
-    # Intent missing 'market' (Required by TopGainersInput)
-    intent = IntentOutput(
-        domain="finance",
-        capability="get_top_gainers",
-        confidence=1.0,
-        parameters={"limit": 5} # Missing 'market' and 'period'
-    )
+        output = await handler.execute(intent)
+        assert output.status == "clarification"
+        assert "validation_error" in output.metadata
 
-    output = await handler.execute(intent)
+    asyncio.run(_run())
 
-    print(f"Status: {output.status}")
-    print(f"Explanation: {output.explanation}")
-    
-    if output.status == "clarification" and "validation_error" in output.metadata:
-        print("✅ SUCCESS: Caught Pydantic ValidationError and asked for clarification.")
-    else:
-        print("❌ FAILURE: Did not trigger clarification correctly.")
-        print(output)
+def test_valid_execution():
+    async def _run() -> None:
+        gateway = MagicMock(spec=SkillGateway)
+        gateway.execute.return_value = {"success": True, "data": [{"ticker": "AAPL", "price": 150}]}
 
-async def test_valid_execution():
-    print("\n--- Testing Valid Execution for get_top_gainers ---")
-    
-    gateway = MagicMock(spec=SkillGateway)
-    gateway.execute.return_value = {"success": True, "data": [{"ticker": "AAPL", "price": 150}]}
-    
-    registry = MagicMock()
-    registry.get_metadata.return_value = {}
+        registry = MagicMock()
+        registry.get_metadata.return_value = {}
 
-    handler = FinanceDomainHandler(skill_gateway=gateway, registry=registry)
+        handler = FinanceDomainHandler(skill_gateway=gateway, registry=registry)
+        intent = IntentOutput(
+            domain="finance",
+            capability="get_top_gainers",
+            confidence=1.0,
+            parameters={"market": "US", "period": "1d", "limit": 5}
+        )
 
-    intent = IntentOutput(
-        domain="finance",
-        capability="get_top_gainers",
-        confidence=1.0,
-        parameters={"market": "US", "period": "1d", "limit": 5}
-    )
+        output = await handler.execute(intent)
+        assert output.status == "success"
+        assert "items" in output.result
+        assert output.result["count"] == 1
 
-    output = await handler.execute(intent)
-
-    print(f"Status: {output.status}")
-    print(f"Result: {output.result}")
-    
-    if output.status == "success":
-        print("✅ SUCCESS: Valid parameters executed correctly.")
-    else:
-        print("❌ FAILURE: Valid execution failed.")
+    asyncio.run(_run())
 
 if __name__ == "__main__":
-    asyncio.run(test_missing_param_clarification())
-    asyncio.run(test_valid_execution())
+    test_missing_param_clarification()
+    test_valid_execution()

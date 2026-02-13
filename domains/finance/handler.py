@@ -28,8 +28,6 @@ from typing import get_type_hints
 
 logger = logging.getLogger(__name__)
 
-logger = logging.getLogger(__name__)
-
 
 class FinanceDomainHandler:
     """Finance domain handler — orchestrates context, skills, and strategy."""

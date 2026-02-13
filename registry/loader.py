@@ -64,7 +64,8 @@ class RegistryLoader:
                     elif name == "general":
                         handler = GeneralDomainHandler(
                             model_selector=context["model_selector"],
-                            model_name=config.get("model", "qwen2.5-coder:32b")
+                            model_name=config.get("model", "qwen2.5-coder:32b"),
+                            capability_catalog_provider=context.get("capability_catalog_provider"),
                         )
                 
                 if handler:
@@ -72,12 +73,18 @@ class RegistryLoader:
                     
                     # Register capabilities
                     caps = self.db.list_capabilities(name)
+                    if dtype == "remote_http" and not caps:
+                        logger.info("No cached capabilities for '%s'. Trying live sync...", name)
+                        if self.sync_capabilities(name):
+                            caps = self.db.list_capabilities(name)
                     logger.info("Domain '%s' has %d capabilities in DB", name, len(caps))
                     for cap in caps:
                         # Extract metadata from JSON string
                         cap_metadata = json.loads(cap["metadata"]) if cap.get("metadata") else {}
                         # Backwards compatibility: ensure schema is in metadata
                         cap_metadata["schema"] = json.loads(cap["input_schema"]) if cap.get("input_schema") else {}
+                        cap_metadata.setdefault("domain", name)
+                        cap_metadata.setdefault("description", cap.get("description", ""))
                         
                         self.registry.register_capability(
                             cap["capability"], 
@@ -90,56 +97,75 @@ class RegistryLoader:
             except Exception as e:
                 logger.error("Failed to load domain '%s': %s", name, e, exc_info=True)
 
-    def sync_local_to_db(self) -> None:
-        """Helper to seed DB with default local config (for migration)."""
-        logger.info("RegistryLoader: Seeding local domain defaults...")
-        # General Domain
+    def sync_core_defaults(self) -> None:
+        """
+        Seed only core local capabilities required by the orchestrator runtime.
+        Domain-specific integrations must be injected via RegistryDB/bootstrapping.
+        """
+        logger.info("RegistryLoader: syncing core defaults...")
         self.db.register_domain("general", "local", {"model": "qwen2.5-coder:32b"})
         self.db.register_capability(
             domain_name="general",
             capability="chat",
             description="General conversation and help",
             schema={"message": "string"},
-            metadata={"explanation_template": "{result[response]}"}
+            metadata={"explanation_template": "{result[response]}"},
+        )
+        self.db.register_capability(
+            domain_name="general",
+            capability="list_capabilities",
+            description="List available domains and capabilities grouped by domain",
+            schema={"message": "string"},
+            metadata={"explanation_template": "{result[response]}"},
         )
 
-        # Finance Domain (Optional local fallback, usually remote now)
-        self.db.register_domain("finance", "local", {})
-        
-        # Apply metadata overrides from code to DB
-        try:
-             from domains.finance.server import METADATA_OVERRIDES
-             
-             # Fetch existing capabilities to preserve schema/description
-             existing_rows = self.db.list_capabilities("finance")
-             existing_caps = {row["capability"]: row for row in existing_rows}
-             
-             for cap_name, overrides in METADATA_OVERRIDES.items():
-                 existing = existing_caps.get(cap_name)
-                 
-                 if existing:
-                     # Merge metadata
-                     current_meta = json.loads(existing["metadata"]) if existing.get("metadata") else {}
-                     current_meta.update(overrides)
-                     
-                     # Extract schema properly from DB row (key is input_schema)
-                     current_schema = json.loads(existing["input_schema"]) if existing.get("input_schema") else {}
-                     
-                     self.db.register_capability(
-                         domain_name="finance",
-                         capability=cap_name,
-                         description=existing.get("description", ""),
-                         schema=current_schema,
-                         metadata=current_meta
-                     )
-                     logger.debug("Updated metadata for %s", cap_name)
-                 else:
-                     # Optional: Register if strictly local and missing? 
-                     # For now, we only enrich existing ones to avoid schema-less ghosts.
-                     pass
+    def sync_local_to_db(self) -> None:
+        """
+        Backward-compatible alias.
+        Kept to avoid breaking old call sites; now seeds only core defaults.
+        """
+        self.sync_core_defaults()
 
-        except Exception as e:
-             logger.warning("Failed to sync finance metadata overrides: %s", e)
+    def bootstrap_domains(self, domains: list[dict[str, Any]], sync_remote_capabilities: bool = True) -> None:
+        """
+        Upsert domains from external configuration into RegistryDB.
+        This avoids hardcoded domain definitions in code.
+
+        Expected item format:
+        {
+          "name": "finance",
+          "type": "remote_http" | "local",
+          "config": {"url": "..."}
+        }
+        """
+        if not domains:
+            return
+
+        logger.info("Bootstrapping %d domains into RegistryDB", len(domains))
+        for item in domains:
+            name = item.get("name")
+            domain_type = item.get("type")
+            config = item.get("config", {})
+            should_sync_caps = bool(item.get("sync_capabilities", sync_remote_capabilities))
+
+            if not name or not domain_type:
+                logger.warning("Skipping invalid bootstrap domain entry: %s", item)
+                continue
+
+            try:
+                self.db.register_domain(name=name, domain_type=domain_type, config=config)
+                logger.info("Bootstrapped domain: %s (%s)", name, domain_type)
+            except Exception as e:
+                logger.error("Failed to bootstrap domain '%s': %s", name, e, exc_info=True)
+                continue
+
+            if should_sync_caps and domain_type == "remote_http":
+                try:
+                    synced = self.sync_capabilities(name)
+                    if not synced:
+                        logger.warning("Manifest sync failed for remote domain '%s'", name)
+                except Exception as e:
+                    logger.warning("Manifest sync error for '%s': %s", name, e)
 
     def sync_capabilities(self, domain_name: str) -> bool:
         """

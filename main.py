@@ -10,6 +10,7 @@ import logging
 import sys
 import os
 import asyncio
+from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
@@ -42,6 +43,20 @@ MCP_URL = os.getenv("MCP_URL", "http://localhost:8000/sse")
 DB_PATH = os.getenv("DB_PATH", "agent.db")
 REGISTRY_DB_PATH = os.getenv("REGISTRY_DB_PATH", "registry.db")
 LOG_LEVEL = logging.INFO
+BOOTSTRAP_DOMAINS_JSON = os.getenv("BOOTSTRAP_DOMAINS_JSON", "").strip()
+BOOTSTRAP_DOMAINS_FILE = os.getenv("BOOTSTRAP_DOMAINS_FILE", "").strip()
+AUTO_SYNC_REMOTE_CAPABILITIES = os.getenv("AUTO_SYNC_REMOTE_CAPABILITIES", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+SEED_CORE_DEFAULTS = os.getenv("SEED_CORE_DEFAULTS", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 # ─── Rich Console ───────────────────────────────────────────────
 
@@ -72,7 +87,47 @@ def preload_models() -> None:
             logger.warning("Could not preload model: %s", model)
 
 
-def build_pipeline() -> tuple[CLIAdapter, ConversationManager, IntentAdapter, PlannerService, ExecutionEngine]:
+def _load_bootstrap_domains() -> list[dict]:
+    """
+    Load bootstrap domain config from env JSON or file path.
+    Priority:
+    1. BOOTSTRAP_DOMAINS_JSON
+    2. BOOTSTRAP_DOMAINS_FILE
+    """
+    if BOOTSTRAP_DOMAINS_JSON:
+        try:
+            payload = json.loads(BOOTSTRAP_DOMAINS_JSON)
+            if isinstance(payload, list):
+                return payload
+            logger.warning("BOOTSTRAP_DOMAINS_JSON must be a JSON array.")
+        except json.JSONDecodeError as e:
+            logger.warning("Invalid BOOTSTRAP_DOMAINS_JSON: %s", e)
+
+    if BOOTSTRAP_DOMAINS_FILE:
+        path = Path(BOOTSTRAP_DOMAINS_FILE)
+        if not path.exists():
+            logger.warning("BOOTSTRAP_DOMAINS_FILE not found: %s", path)
+            return []
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, list):
+                return payload
+            logger.warning("BOOTSTRAP_DOMAINS_FILE must contain a JSON array: %s", path)
+        except Exception as e:
+            logger.warning("Failed to parse BOOTSTRAP_DOMAINS_FILE '%s': %s", path, e)
+
+    return []
+
+
+def build_pipeline() -> tuple[
+    CLIAdapter,
+    ConversationManager,
+    IntentAdapter,
+    PlannerService,
+    ExecutionEngine,
+    ModelSelector,
+    MCPAdapter,
+]:
     """Wire all layers together using Dynamic Registry."""
     # Shared
     model_selector = ModelSelector(ollama_url=OLLAMA_URL)
@@ -83,23 +138,30 @@ def build_pipeline() -> tuple[CLIAdapter, ConversationManager, IntentAdapter, Pl
     skill_registry.register("mcp_finance", mcp_adapter)
     skill_gateway = SkillGateway(skill_registry)
 
-    # Context for Local Handlers
-    loader_context = {
-        "skill_gateway": skill_gateway,
-        "model_selector": model_selector
-    }
-
     # Dynamic Registry
     db = RegistryDB(db_path=REGISTRY_DB_PATH)
     runtime_registry = HandlerRegistry()
     loader = RegistryLoader(db, runtime_registry)
 
-    # Ensure local defaults exist (Seed/Update local domains and capabilities)
-    logger.info("Syncing local domain defaults...")
-    loader.sync_local_to_db()
-        # Initial capability sync for local is manual/hardcoded in loader for now,
-        # or we rely on intent adapter to know them.
-        # Ideally, local handlers should describe themselves too, but for now we assume they are safe.
+    # Context for Local Handlers
+    loader_context = {
+        "skill_gateway": skill_gateway,
+        "model_selector": model_selector,
+        "capability_catalog_provider": db.list_capabilities,
+    }
+
+    # Optional core defaults; can be disabled for fully table-driven configuration.
+    if SEED_CORE_DEFAULTS:
+        loader.sync_core_defaults()
+
+    # Inject external domains from configuration into the registry DB.
+    bootstrap_domains = _load_bootstrap_domains()
+    if bootstrap_domains:
+        logger.info("Applying bootstrap domains from configuration...")
+        loader.bootstrap_domains(
+            bootstrap_domains,
+            sync_remote_capabilities=AUTO_SYNC_REMOTE_CAPABILITIES,
+        )
 
     # Load All Domains
     loader.load_all(loader_context)
@@ -109,14 +171,27 @@ def build_pipeline() -> tuple[CLIAdapter, ConversationManager, IntentAdapter, Pl
     
     # Get all registered capabilities for the Intent Adapter
     registered_capabilities = runtime_registry.registered_capabilities
-    intent_adapter = IntentAdapter(model_selector=model_selector, initial_capabilities=registered_capabilities)
+    capability_catalog = db.list_capabilities()
+    intent_adapter = IntentAdapter(
+        model_selector=model_selector,
+        initial_capabilities=registered_capabilities,
+        capability_catalog=capability_catalog,
+    )
     
-    planner_service = PlannerService()
+    planner_service = PlannerService(known_capabilities=registered_capabilities)
     execution_engine = ExecutionEngine(orchestrator=orchestrator)
     conversation_manager = ConversationManager(db_path=DB_PATH)
     cli_adapter = CLIAdapter()
 
-    return cli_adapter, conversation_manager, intent_adapter, planner_service, execution_engine
+    return (
+        cli_adapter,
+        conversation_manager,
+        intent_adapter,
+        planner_service,
+        execution_engine,
+        model_selector,
+        mcp_adapter,
+    )
 
 
 def render_result(intent, output) -> None:
@@ -226,6 +301,10 @@ def render_intent_debug(intent) -> None:
 
 async def run_agent_loop() -> None:
     """Interactive Agent Loop."""
+    conversation: ConversationManager | None = None
+    model_selector: ModelSelector | None = None
+    mcp_adapter: MCPAdapter | None = None
+
     console.print(Panel(
         Text.from_markup(
             "[bold cyan]Agent Orchestrator[/bold cyan]\n"
@@ -242,7 +321,15 @@ async def run_agent_loop() -> None:
         preload_models()
 
     try:
-        cli, conversation, intent_adapter, planner, engine = build_pipeline()
+        (
+            cli,
+            conversation,
+            intent_adapter,
+            planner,
+            engine,
+            model_selector,
+            mcp_adapter,
+        ) = build_pipeline()
     except Exception as e:
         console.print(f"[bold red]Failed to initialize pipeline:[/] {e}")
         sys.exit(1)
@@ -252,64 +339,79 @@ async def run_agent_loop() -> None:
     # console.print(f"[dim]Capabilities: {len(engine.orchestrator.domain_registry.registered_capabilities)}[/dim]")
     console.print()
 
-    while True:
-        try:
-            # Step 1: Entry — read input
-            # Use run_in_executor for blocking input if needed, but console.input is robust enough for CLI
-            raw_input = console.input("[bold cyan]You → [/]")
+    try:
+        while True:
+            try:
+                # Step 1: Entry — read input
+                # Use run_in_executor for blocking input if needed, but console.input is robust enough for CLI
+                raw_input = console.input("[bold cyan]You → [/]")
 
-            if raw_input.strip().lower() in ("exit", "quit", "q"):
-                console.print("[dim]Goodbye! 👋[/dim]")
-                break
+                if raw_input.strip().lower() in ("exit", "quit", "q"):
+                    console.print("[dim]Goodbye! 👋[/dim]")
+                    break
 
-            if not raw_input.strip():
-                continue
-
-            entry_request = cli.read_input(raw_input)
-
-            # Step 2: Conversation — get history
-            history = conversation.get_history(entry_request.session_id)
-
-            # Step 3: Intent Adapter — extract intent (LLM)
-            with console.status("[yellow]Thinking...[/yellow]", spinner="dots"):
-                try:
-                    # Intent extraction is still sync/blocking (HTTP client), which is fine for CLI
-                    intent = intent_adapter.extract(entry_request.input_text, history)
-                except ValueError as e:
-                    console.print(f"\n[bold red]Intent extraction failed:[/] {e}")
-                    conversation.save(entry_request.session_id, "user", entry_request.input_text)
-                    conversation.save(entry_request.session_id, "assistant", f"Error: {e}")
+                if not raw_input.strip():
                     continue
 
-            # Show intent debug
-            render_intent_debug(intent)
+                entry_request = cli.read_input(raw_input)
 
-            # Step 4: Planner (Decomposition)
-            with console.status("[blue]Planning...[/blue]", spinner="dots"):
-                plan = planner.generate_plan(intent)
-                logger.info("Plan generated: %d steps", len(plan.steps))
+                # Step 2: Conversation — get history
+                history = conversation.get_history(entry_request.session_id)
 
-            # Step 5-8: Execution Engine (Orchestrator + Domain + Model)
-            with console.status("[green]Executing...[/green]", spinner="dots"):
-                # await the async engine
-                output = await engine.execute_plan(plan, original_intent=intent)
+                # Step 3: Intent Adapter — extract intent (LLM)
+                with console.status("[yellow]Thinking...[/yellow]", spinner="dots"):
+                    try:
+                        # Intent extraction is still sync/blocking (HTTP client), which is fine for CLI
+                        intent = intent_adapter.extract(
+                            entry_request.input_text,
+                            history,
+                            session_id=entry_request.session_id,
+                        )
+                    except ValueError as e:
+                        console.print(f"\n[bold red]Intent extraction failed:[/] {e}")
+                        conversation.save(entry_request.session_id, "user", entry_request.input_text)
+                        conversation.save(entry_request.session_id, "assistant", f"Error: {e}")
+                        continue
 
-            # Step 9: Render output
-            render_result(intent, output)
+                # Show intent debug
+                render_intent_debug(intent)
 
-            # Step 9: Persist conversation
-            conversation.save(entry_request.session_id, "user", entry_request.input_text)
-            response_text = output.explanation if output.status == "success" else f"Error: {output.metadata.get('error', 'unknown')}"
-            conversation.save(entry_request.session_id, "assistant", response_text)
+                # Step 4: Planner (Decomposition)
+                with console.status("[blue]Planning...[/blue]", spinner="dots"):
+                    plan = planner.generate_plan(intent)
+                    logger.info("Plan generated: %d steps", len(plan.steps))
 
-            console.print()
+                # Step 5-8: Execution Engine (Orchestrator + Domain + Model)
+                with console.status("[green]Executing...[/green]", spinner="dots"):
+                    # await the async engine
+                    output = await engine.execute_plan(plan, original_intent=intent)
 
-        except KeyboardInterrupt:
-            console.print("\n[dim]Interrupted. Goodbye! 👋[/dim]")
-            break
-        except EOFError:
-            console.print("\n[dim]Goodbye! 👋[/dim]")
-            break
+                # Step 9: Render output
+                render_result(intent, output)
+
+                # Step 9: Persist conversation
+                conversation.save(entry_request.session_id, "user", entry_request.input_text)
+                if output.status in ("success", "clarification"):
+                    response_text = output.explanation
+                else:
+                    response_text = f"Error: {output.metadata.get('error', 'unknown')}"
+                conversation.save(entry_request.session_id, "assistant", response_text)
+
+                console.print()
+
+            except KeyboardInterrupt:
+                console.print("\n[dim]Interrupted. Goodbye! 👋[/dim]")
+                break
+            except EOFError:
+                console.print("\n[dim]Goodbye! 👋[/dim]")
+                break
+    finally:
+        if conversation:
+            conversation.close()
+        if model_selector:
+            model_selector.close()
+        if mcp_adapter:
+            mcp_adapter.close()
 
 
 # ─── Admin Commands ─────────────────────────────────────────────

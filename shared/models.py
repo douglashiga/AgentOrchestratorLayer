@@ -38,16 +38,22 @@ class ExecutionStep(BaseModel):
     """Atomic step in an execution plan."""
     model_config = {"frozen": True}
     id: int
+    domain: str | None = Field(default=None, description="Target domain for this step")
     capability: str
     params: dict[str, Any] = Field(default_factory=dict)
     depends_on: list[int] = Field(default_factory=list)
+    required: bool = Field(default=True, description="If true, stop/mark failure when this step fails")
+    output_key: str | None = Field(default=None, description="Optional key used in combined output")
+    timeout_seconds: float | None = Field(default=None, description="Optional per-step timeout")
 
 
 class ExecutionPlan(BaseModel):
     """Structured plan for the Execution Engine."""
     model_config = {"frozen": True}
-    execution_mode: str = Field(..., description="'sequential' or 'parallel'")
+    execution_mode: str = Field(..., description="'sequential', 'parallel', or 'dag'")
     steps: list[ExecutionStep]
+    combine_mode: str = Field(default="last", description="'last', 'report', or 'merge'")
+    max_concurrency: int = Field(default=4, description="Maximum number of concurrent steps")
 # ─── Model Layer (Policy) ──────────────────────────────────────
 
 class ModelPolicy(BaseModel):

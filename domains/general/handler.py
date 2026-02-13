@@ -10,6 +10,8 @@ Performance:
 """
 
 import logging
+from collections import defaultdict
+from typing import Any, Callable
 
 from models.selector import ModelSelector
 from shared.models import Decision, DomainOutput, IntentOutput, ModelPolicy
@@ -20,8 +22,14 @@ logger = logging.getLogger(__name__)
 class GeneralDomainHandler:
     """Handles general conversation using Ollama LLM via Model Layer."""
 
-    def __init__(self, model_selector: ModelSelector, model_name: str = "qwen2.5-coder:32b"):
+    def __init__(
+        self,
+        model_selector: ModelSelector,
+        model_name: str = "qwen2.5-coder:32b",
+        capability_catalog_provider: Callable[[], list[dict[str, Any]]] | None = None,
+    ):
         self.model_selector = model_selector
+        self.capability_catalog_provider = capability_catalog_provider
         self.max_tokens = 256
         self.policy = ModelPolicy(
             model_name=model_name,
@@ -33,6 +41,15 @@ class GeneralDomainHandler:
 
     async def execute(self, intent: IntentOutput) -> DomainOutput:
         """Generate a conversational response."""
+        if intent.capability == "list_capabilities":
+            response_text = self._build_capability_listing()
+            return DomainOutput(
+                status="success",
+                result={"response": response_text},
+                explanation=response_text,
+                confidence=1.0,
+            )
+
         user_message = intent.parameters.get("message", "")
 
         try:
@@ -53,6 +70,39 @@ class GeneralDomainHandler:
                 confidence=0.0,
                 metadata={"error": str(e)}
             )
+
+    def _build_capability_listing(self) -> str:
+        """Build deterministic domain/capability listing from runtime registry data."""
+        if not self.capability_catalog_provider:
+            return "No capability catalog available right now."
+
+        try:
+            catalog = self.capability_catalog_provider() or []
+        except Exception as e:
+            logger.error("Failed to fetch capability catalog: %s", e)
+            return "I couldn't load the capability catalog right now."
+
+        if not catalog:
+            return "No capabilities are currently registered."
+
+        grouped: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for item in catalog:
+            domain = str(item.get("domain", "")).strip() or "unknown"
+            capability = str(item.get("capability", "")).strip()
+            description = str(item.get("description", "")).strip()
+            if capability:
+                grouped[domain].append((capability, description))
+
+        lines = ["Here is what I can do by domain:"]
+        for domain in sorted(grouped.keys()):
+            lines.append(f"- {domain}:")
+            for capability, description in sorted(grouped[domain], key=lambda x: x[0]):
+                if description:
+                    lines.append(f"  - {capability}: {description}")
+                else:
+                    lines.append(f"  - {capability}")
+
+        return "\n".join(lines)
 
     def _generate_response(self, user_message: str) -> str:
         """Call Model Selector."""

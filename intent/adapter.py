@@ -15,7 +15,6 @@ import logging
 import json
 from typing import Any
 
-from observability.logger import Observability
 from models.selector import ModelSelector
 from shared.models import IntentOutput, ModelPolicy
 
@@ -24,9 +23,15 @@ logger = logging.getLogger(__name__)
 class IntentAdapter:
     """Extracts structured Intent from user input using Model Layer."""
 
-    def __init__(self, model_selector: ModelSelector, initial_capabilities: list[str] | None = None):
+    def __init__(
+        self,
+        model_selector: ModelSelector,
+        initial_capabilities: list[str] | None = None,
+        capability_catalog: list[dict[str, Any]] | None = None,
+    ):
         self.model_selector = model_selector
         self.capabilities = initial_capabilities or []
+        self.capability_catalog = capability_catalog or []
         self.policy = ModelPolicy(
             model_name="llama3.1:8b",
             temperature=0.0,
@@ -39,6 +44,11 @@ class IntentAdapter:
         """Update the list of capabilities known to the LLM."""
         self.capabilities = capabilities
         logger.info("IntentAdapter updated with %d capabilities", len(capabilities))
+
+    def update_capability_catalog(self, capability_catalog: list[dict[str, Any]]) -> None:
+        """Update runtime domain/capability catalog for dynamic prompt generation."""
+        self.capability_catalog = capability_catalog
+        logger.info("IntentAdapter updated with %d catalog entries", len(capability_catalog))
 
     def extract(self, input_text: str, history: list[dict] | None = None, session_id: str | None = None) -> IntentOutput:
         """
@@ -79,8 +89,62 @@ class IntentAdapter:
                 original_query=input_text
             )
 
+    def _render_capability_catalog(self) -> str:
+        """Render domain/action catalog from runtime registry data."""
+        if not self.capability_catalog:
+            return ""
+
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in self.capability_catalog:
+            domain = str(item.get("domain", "")).strip() or "unknown"
+            grouped.setdefault(domain, []).append(item)
+
+        lines: list[str] = []
+        for domain in sorted(grouped.keys()):
+            lines.append(f"- Domain '{domain}':")
+            for cap in sorted(grouped[domain], key=lambda x: str(x.get("capability", ""))):
+                cap_name = str(cap.get("capability", "")).strip()
+                cap_desc = str(cap.get("description", "")).strip() or "No description provided."
+                lines.append(f"  - action '{cap_name}': {cap_desc}")
+        return "\n".join(lines)
+
     def _build_system_prompt(self) -> str:
-        """Build the system prompt dynamically based on current capabilities."""
+        """Build the system prompt dynamically from the runtime catalog when available."""
+        catalog_block = self._render_capability_catalog()
+        if catalog_block:
+            has_list_capability = any(
+                str(item.get("domain", "")).strip() == "general"
+                and str(item.get("capability", "")).strip() == "list_capabilities"
+                for item in self.capability_catalog
+            )
+            discovery_rule = (
+                '2. For greetings/casual conversation/help: use domain "general" and action "chat".\n'
+                '3. If user asks "what can you do", "list capabilities", or "which domains": use domain "general" and action "list_capabilities".\n'
+                if has_list_capability
+                else '2. For greetings, casual conversation, help, or "what can you do?" questions: use domain "general" and action "chat".\n'
+            )
+            return f"""You are an intent extraction engine. Your ONLY job is to analyze the user's message and return a structured JSON object.
+
+You MUST respond with ONLY a valid JSON object. No explanations, no markdown, no extra text.
+
+The JSON must follow this exact schema:
+{{
+  "domain": "<domain>",
+  "action": "<action>",
+  "parameters": {{}},
+  "confidence": <float 0.0-1.0>
+}}
+
+Runtime domain/action catalog:
+{catalog_block}
+
+Rules:
+1. Use only domains/actions listed above.
+{discovery_rule}4. If confidence is not high, return confidence <= 0.90.
+5. If the user answer is a short follow-up to an assistant question, infer the intended domain/action from chat history.
+6. Return ONLY the JSON object.
+"""
+
         return f"""You are an intent extraction engine. Your ONLY job is to analyze the user's message and return a structured JSON object.
 
 You MUST respond with ONLY a valid JSON object. No explanations, no markdown, no extra text.
