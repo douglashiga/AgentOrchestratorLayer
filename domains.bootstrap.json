@@ -4,7 +4,7 @@
     "type": "remote_http",
     "config": {
       "url": "http://finance-server:8001",
-      "timeout": 30.0
+      "timeout": 90.0
     },
     "sync_capabilities": true
   },

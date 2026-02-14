@@ -18,8 +18,10 @@ Prohibitions:
 """
 
 import asyncio
+import concurrent.futures
 import json
 import logging
+import os
 import threading
 from typing import Any
 
@@ -40,6 +42,7 @@ class MCPAdapter:
 
     def __init__(self, mcp_url: str = "http://localhost:8000/sse"):
         self.mcp_url = mcp_url
+        self.call_timeout_seconds = float(os.getenv("MCP_ADAPTER_CALL_TIMEOUT_SECONDS", "90"))
 
         # Background event loop for async MCP calls
         self._loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
@@ -58,7 +61,14 @@ class MCPAdapter:
     def _submit(self, coro) -> Any:
         """Submit a coroutine to the background loop and wait for result."""
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout=30)
+        try:
+            return future.result(timeout=self.call_timeout_seconds)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise TimeoutError(
+                f"MCP call timed out after {self.call_timeout_seconds:.0f}s "
+                f"(endpoint={self.mcp_url})"
+            )
 
     def execute(self, parameters: dict[str, Any]) -> dict[str, Any]:
         """
@@ -80,11 +90,11 @@ class MCPAdapter:
         try:
             return self._submit(self._call_tool(tool_name, parameters))
         except Exception as e:
-            logger.error("MCP execution error: %s", e)
+            logger.error("MCP execution error: %r", e)
             # Reset session on error so next call reconnects
             self._connected = False
             self._session = None
-            return {"success": False, "error": f"MCP error: {e}"}
+            return {"success": False, "error": f"MCP error ({type(e).__name__}): {self._format_error_message(e)}"}
 
     async def _call_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Call an MCP tool, using persistent session or reconnecting."""
@@ -105,10 +115,11 @@ class MCPAdapter:
 
                     # Parse the result
                     if result.isError:
-                        error_text = ""
+                        error_text_parts: list[str] = []
                         for content in result.content:
-                            if hasattr(content, "text"):
-                                error_text += content.text
+                            if hasattr(content, "text") and content.text:
+                                error_text_parts.append(content.text)
+                        error_text = " ".join(error_text_parts).strip()
                         return {"success": False, "error": error_text or "MCP tool returned an error"}
 
                     # Extract text content
@@ -117,7 +128,18 @@ class MCPAdapter:
                         if hasattr(content, "text"):
                             try:
                                 parsed = json.loads(content.text)
-                                data = parsed if isinstance(parsed, dict) else {"value": parsed}
+                                # Normalize MCP envelope: {"success": bool, "data": ..., "error": ...}
+                                if isinstance(parsed, dict) and "success" in parsed:
+                                    if parsed.get("success") is False:
+                                        return {
+                                            "success": False,
+                                            "error": self._extract_embedded_error(parsed),
+                                            "data": parsed.get("data"),
+                                            "meta": parsed.get("meta"),
+                                        }
+                                    data = parsed
+                                else:
+                                    data = parsed if isinstance(parsed, dict) else {"value": parsed}
                             except json.JSONDecodeError:
                                 data = {"text": content.text}
 
@@ -132,16 +154,35 @@ class MCPAdapter:
             }
         except Exception as e:
             # Handle ExceptionGroup (common in mcp TaskGroups) to get the real cause
-            error_detail = str(e)
+            error_detail = self._format_error_message(e)
             if hasattr(e, "exceptions") and e.exceptions:
                 # Python 3.11+ ExceptionGroup or anyio ExceptionGroup
-                sub_errors = [str(se) for se in e.exceptions]
+                sub_errors = [self._format_error_message(se) for se in e.exceptions]
                 error_detail = f"{e} (Sub-errors: {', '.join(sub_errors)})"
                 logger.error("MCP SSE TaskGroup failure: %s", error_detail)
             else:
                 logger.error("MCP SSE error: %s", e, exc_info=True)
                 
             return {"success": False, "error": f"MCP SSE error: {error_detail}"}
+
+    def _extract_embedded_error(self, parsed: dict[str, Any]) -> str:
+        error_obj = parsed.get("error")
+        if isinstance(error_obj, dict):
+            code = str(error_obj.get("code", "")).strip()
+            message = str(error_obj.get("message", "")).strip()
+            details = str(error_obj.get("details", "")).strip()
+            parts = [part for part in (code, message, details) if part]
+            if parts:
+                return " | ".join(parts)
+        if isinstance(error_obj, str) and error_obj.strip():
+            return error_obj.strip()
+        return "MCP tool reported failure without details"
+
+    def _format_error_message(self, error: Exception) -> str:
+        text = str(error).strip()
+        if text:
+            return text
+        return error.__class__.__name__
 
     def list_tools(self) -> list[dict[str, Any]]:
         """

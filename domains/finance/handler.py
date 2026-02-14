@@ -136,10 +136,19 @@ class FinanceDomainHandler:
             capability=capability,
             params=params,
             metadata=metadata,
+            original_query=intent.original_query,
         )
         if isinstance(pre_flow_result, DomainOutput):
             return pre_flow_result
         params = pre_flow_result
+
+        required_check = self._validate_required_params_from_schema(
+            capability=capability,
+            params=params,
+            metadata=metadata,
+        )
+        if required_check is not None:
+            return required_check
 
         # ─── 2. Context Resolution ───────────────────────────────────
         try:
@@ -160,8 +169,9 @@ class FinanceDomainHandler:
             # ─── 3. Skill Execution ──────────────────────────────────
             
             # Prepare Skill Params
+            sanitized_params = {k: v for k, v in params.items() if v is not None}
             skill_params = {
-                **params, 
+                **sanitized_params,
                 "_action": capability,
             }
             
@@ -177,6 +187,15 @@ class FinanceDomainHandler:
             skill_data = self.skill_gateway.execute("mcp_finance", skill_params)
             logger.debug("Skill data received: success=%s", skill_data.get("success"))
 
+            if capability == "get_stock_price" and not skill_data.get("success", False):
+                fallback_output = self._fallback_stock_price_from_cache(
+                    params=params,
+                    domain_context=domain_context,
+                    original_error=str(skill_data.get("error", "")),
+                )
+                if fallback_output:
+                    return fallback_output
+
             # ─── 4. Strategy Execution ───────────────────────────────
             execution_context = ExecutionContext(
                 domain_context=domain_context,
@@ -185,6 +204,13 @@ class FinanceDomainHandler:
 
             intent_for_decision = intent.model_copy(update={"parameters": params})
             decision = self.strategy_core.execute(intent_for_decision, execution_context, registry=self.registry)
+
+            clarification_output = self._map_operational_error_to_clarification(
+                capability=capability,
+                decision=decision,
+            )
+            if clarification_output is not None:
+                return clarification_output
             
             # ─── 5. Output Generation ────────────────────────────────
             output_metadata = {"risk_metrics": decision.risk_metrics}
@@ -208,6 +234,102 @@ class FinanceDomainHandler:
                 confidence=0.0,
                 metadata={"error": str(e)}
             )
+
+    def _validate_required_params_from_schema(
+        self,
+        capability: str,
+        params: dict[str, Any],
+        metadata: dict[str, Any],
+    ) -> DomainOutput | None:
+        schema = metadata.get("schema", {})
+        if not isinstance(schema, dict):
+            return None
+
+        required_fields = schema.get("required", [])
+        if not isinstance(required_fields, list) or not required_fields:
+            return None
+
+        missing: list[str] = []
+        for field in required_fields:
+            field_name = str(field).strip()
+            if not field_name:
+                continue
+            value = params.get(field_name)
+            if value in (None, ""):
+                missing.append(field_name)
+
+        if not missing:
+            return None
+
+        fields_label = ", ".join(missing)
+        return DomainOutput(
+            status="clarification",
+            result={},
+            explanation=(
+                f"Para executar '{capability}', faltam parâmetros obrigatórios: {fields_label}. "
+                "Pode informar esses valores?"
+            ),
+            confidence=1.0,
+            metadata={"missing_required_params": missing, "capability": capability},
+        )
+
+    def _map_operational_error_to_clarification(
+        self,
+        capability: str,
+        decision: Decision,
+    ) -> DomainOutput | None:
+        if decision.success:
+            return None
+        error_text = str(decision.error or "").strip().lower()
+        if not error_text:
+            return None
+
+        operational_markers = (
+            "ib_not_connected",
+            "not connected to ib gateway",
+            "timeout",
+            "timed out",
+            "network",
+            "temporarily unavailable",
+            "circuit_open",
+            "tool_not_found",
+            "runtime_error",
+            "stock '",
+            "job '",
+            "not found",
+            "no upcoming earnings",
+        )
+        if not any(marker in error_text for marker in operational_markers):
+            return None
+
+        if "stock '" in error_text and "not found" in error_text:
+            message = (
+                f"Não encontrei dados para o ativo em '{capability}'. "
+                "Confirme o ticker/mercado para eu tentar novamente."
+            )
+        elif "job '" in error_text and "not found" in error_text:
+            message = (
+                "O job informado não existe no momento. "
+                "Use list_jobs para ver os jobs disponíveis."
+            )
+        elif "circuit_open" in error_text:
+            message = (
+                f"A fonte de dados de '{capability}' está temporariamente indisponível "
+                "(circuit breaker). Tente novamente em instantes."
+            )
+        else:
+            message = (
+                f"O serviço de dados para '{capability}' está temporariamente indisponível "
+                "(fonte operacional). Tente novamente em instantes."
+            )
+
+        return DomainOutput(
+            status="clarification",
+            result={},
+            explanation=message,
+            confidence=0.9,
+            metadata={"error": decision.error, "classification": "operational_unavailable"},
+        )
 
     async def _generic_execute(self, intent: IntentOutput, resolved_params: dict) -> DomainOutput:
         """Legacy generic execution path - delegates to unified pipeline."""
@@ -252,6 +374,7 @@ class FinanceDomainHandler:
         capability: str,
         params: dict[str, Any],
         metadata: dict[str, Any],
+        original_query: str,
     ) -> dict[str, Any] | DomainOutput:
         flow_steps = self._get_flow_steps(capability=capability, params=params, metadata=metadata)
         if not flow_steps:
@@ -261,7 +384,7 @@ class FinanceDomainHandler:
         for step in flow_steps:
             step_type = str(step.get("type", "")).strip()
             if step_type == "resolve_symbol":
-                out = self._flow_resolve_symbol(step=step, params=resolved)
+                out = self._flow_resolve_symbol(step=step, params=resolved, original_query=original_query)
                 if isinstance(out, DomainOutput):
                     return out
                 resolved = out
@@ -273,31 +396,56 @@ class FinanceDomainHandler:
         return resolved
 
     def _get_flow_steps(self, capability: str, params: dict[str, Any], metadata: dict[str, Any]) -> list[dict[str, Any]]:
+        schema = metadata.get("schema", {})
+        if not isinstance(schema, dict):
+            schema = {}
+        required_fields = schema.get("required", [])
+        if not isinstance(required_fields, list):
+            required_fields = []
+        required_set = {str(item).strip() for item in required_fields if str(item).strip()}
+
         flow_block = metadata.get("flow", {})
         if isinstance(flow_block, dict):
             pre = flow_block.get("pre")
             if isinstance(pre, list):
-                return [step for step in pre if isinstance(step, dict)]
+                normalized_pre: list[dict[str, Any]] = []
+                for step in pre:
+                    if not isinstance(step, dict):
+                        continue
+                    step_copy = dict(step)
+                    field = str(step_copy.get("param", "")).strip()
+                    if field and "required" not in step_copy:
+                        step_copy["required"] = field in required_set
+                    normalized_pre.append(step_copy)
+                return normalized_pre
 
         # Default inference from schema/params when explicit flow is absent.
-        schema = metadata.get("schema", {})
-        if not isinstance(schema, dict):
-            schema = {}
         properties = schema.get("properties", {})
         if not isinstance(properties, dict):
             properties = {}
 
         steps: list[dict[str, Any]] = []
         if "symbol" in params or "symbol" in properties:
-            steps.append({"type": "resolve_symbol", "param": "symbol"})
+            steps.append({"type": "resolve_symbol", "param": "symbol", "required": "symbol" in required_set})
         if "symbols" in params or "symbols" in properties:
-            steps.append({"type": "resolve_symbol_list", "param": "symbols"})
+            steps.append({"type": "resolve_symbol_list", "param": "symbols", "required": "symbols" in required_set})
         return steps
 
-    def _flow_resolve_symbol(self, step: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | DomainOutput:
+    def _flow_resolve_symbol(
+        self,
+        step: dict[str, Any],
+        params: dict[str, Any],
+        original_query: str,
+    ) -> dict[str, Any] | DomainOutput:
         field = str(step.get("param", "symbol")).strip() or "symbol"
         raw_value = params.get(field)
         if raw_value in (None, ""):
+            inferred = self._infer_symbol_from_query_text(original_query)
+            if inferred:
+                updated = dict(params)
+                updated[field] = inferred
+                logger.info("Inferred symbol from query text: %s", inferred)
+                return updated
             if step.get("required") is True:
                 return DomainOutput(
                     status="clarification",
@@ -315,6 +463,38 @@ class FinanceDomainHandler:
         updated = dict(params)
         updated[field] = resolved_symbol
         return updated
+
+    def _infer_symbol_from_query_text(self, query: str) -> str | None:
+        text = (query or "").strip().upper()
+        if not text:
+            return None
+
+        # Explicit exchange suffix first (e.g. PETR4.SA, VOLV-B.ST, AAPL)
+        explicit_matches = re.findall(r"\b([A-Z0-9-]{1,12}\.[A-Z]{1,4})\b", text)
+        for candidate in explicit_matches:
+            normalized = self._normalize_canonical_symbol(candidate)
+            if normalized:
+                return normalized
+
+        # B3 pattern without suffix (e.g. PETR4, VALE3, BOVA11)
+        b3_matches = re.findall(r"\b([A-Z]{4}(?:3|4|5|6|11)(?:F)?)\b", text)
+        for candidate in b3_matches:
+            normalized = self._normalize_canonical_symbol(candidate)
+            if normalized:
+                return normalized
+
+        # Common noisy B3 token (e.g. PETRO4 -> PETR4.SA)
+        quasi_b3_matches = re.findall(r"\b([A-Z]{5,8}(?:3|4|5|6|11)(?:F)?)\b", text)
+        for candidate in quasi_b3_matches:
+            if candidate.endswith("11"):
+                compact = f"{candidate[:4]}11"
+            else:
+                compact = f"{candidate[:4]}{candidate[-1]}"
+            normalized = self._normalize_canonical_symbol(compact)
+            if normalized:
+                return normalized
+
+        return None
 
     def _flow_resolve_symbol_list(self, step: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | DomainOutput:
         field = str(step.get("param", "symbols")).strip() or "symbols"
@@ -352,25 +532,60 @@ class FinanceDomainHandler:
                 confidence=1.0,
             )
 
-        if self._looks_canonical_symbol(symbol_norm):
-            return symbol_norm
+        normalized_canonical = self._normalize_canonical_symbol(symbol_norm)
+        is_plain_alpha = bool(re.fullmatch(r"[A-Z]{1,5}", symbol_norm))
+        if normalized_canonical and not is_plain_alpha:
+            return normalized_canonical
 
         search_capability = str(step.get("search_capability", "search_symbol")).strip() or "search_symbol"
         search_param = str(step.get("search_param", "query")).strip() or "query"
-        search_result = self.skill_gateway.execute(
-            "mcp_finance",
-            {
-                "_action": search_capability,
-                search_param: symbol_norm,
-            },
-        )
-        if not search_result.get("success"):
-            logger.warning("%s failed, using raw symbol: %s", search_capability, search_result.get("error"))
-            return symbol_norm
+        search_fallbacks = step.get("search_fallback_capabilities")
+        search_capabilities = [search_capability]
+        if isinstance(search_fallbacks, list):
+            for item in search_fallbacks:
+                cap = str(item).strip()
+                if cap and cap not in search_capabilities:
+                    search_capabilities.append(cap)
+        if "yahoo_search" not in search_capabilities:
+            search_capabilities.append("yahoo_search")
+
+        search_result = None
+        used_search_capability = ""
+        for capability_name in search_capabilities:
+            trial = self.skill_gateway.execute(
+                "mcp_finance",
+                {
+                    "_action": capability_name,
+                    search_param: symbol_norm,
+                },
+            )
+            if trial.get("success"):
+                search_result = trial
+                used_search_capability = capability_name
+                break
+            logger.warning("%s failed for symbol '%s': %s", capability_name, symbol_norm, trial.get("error"))
+
+        if not search_result:
+            # Deterministic fallback for plain alpha tickers (e.g., AAPL)
+            # when lookup backend is unavailable.
+            if normalized_canonical and is_plain_alpha:
+                return normalized_canonical
+            return DomainOutput(
+                status="clarification",
+                result={},
+                explanation=(
+                    f"Não consegui identificar o ticker para '{raw_symbol}'. "
+                    "Pode informar o código exato? Ex: PETR4.SA, VALE3.SA, AAPL."
+                ),
+                confidence=1.0,
+                metadata={"resolution": "symbol_lookup_failed"},
+            )
 
         data = search_result.get("data", {})
         candidates = self._extract_symbol_candidates(data)
         if not candidates:
+            if normalized_canonical and is_plain_alpha:
+                return normalized_canonical
             return DomainOutput(
                 status="clarification",
                 result={},
@@ -383,8 +598,8 @@ class FinanceDomainHandler:
             )
 
         if len(candidates) == 1:
-            chosen = candidates[0]["symbol"]
-            logger.info("Resolved symbol '%s' -> '%s' via %s", symbol_norm, chosen, search_capability)
+            chosen = self._normalize_canonical_symbol(candidates[0]["symbol"]) or candidates[0]["symbol"]
+            logger.info("Resolved symbol '%s' -> '%s' via %s", symbol_norm, chosen, used_search_capability)
             return chosen
 
         top = candidates[:5]
@@ -407,13 +622,27 @@ class FinanceDomainHandler:
         - VALE3.SA
         - VOLV-B.ST
         """
-        # If symbol has explicit exchange suffix or numeric class marker,
-        # we trust it as canonical and skip disambiguation.
-        if bool(re.fullmatch(r"[A-Z0-9-]{1,12}\.[A-Z]{1,4}", symbol)):
-            return True
-        if any(ch.isdigit() for ch in symbol):
-            return True
-        return False
+        return self._normalize_canonical_symbol(symbol) is not None
+
+    def _normalize_canonical_symbol(self, symbol: str) -> str | None:
+        """
+        Normalize trusted canonical patterns:
+        - Explicit exchange suffix: PETR4.SA, VOLV-B.ST
+        - B3 base format: PETR4, VALE3, BOVA11 -> add .SA
+        - US base format: AAPL, TSLA
+        """
+        sym = (symbol or "").strip().upper()
+        if not sym:
+            return None
+        if bool(re.fullmatch(r"[A-Z0-9-]{1,12}\.[A-Z]{1,4}", sym)):
+            return sym
+        # B3 base symbols: 4 letters + class (3/4/5/6/11)
+        if bool(re.fullmatch(r"[A-Z]{4}(?:3|4|5|6|11)(?:F)?", sym)):
+            return f"{sym}.SA"
+        # US tickers (letters only, short)
+        if bool(re.fullmatch(r"[A-Z]{1,5}", sym)):
+            return sym
+        return None
 
     def _extract_symbol_candidates(self, payload: Any) -> list[dict[str, str]]:
         """
@@ -452,3 +681,78 @@ class FinanceDomainHandler:
             name = str(item.get("name") or item.get("company") or item.get("description") or "").strip()
             candidates.append({"symbol": symbol_norm, "name": name})
         return candidates
+
+    def _fallback_stock_price_from_cache(
+        self,
+        params: dict[str, Any],
+        domain_context: Any,
+        original_error: str,
+    ) -> DomainOutput | None:
+        symbol = str(params.get("symbol", "")).strip()
+        if not symbol:
+            return None
+
+        attempts: list[str] = []
+        attempts.append(symbol)
+        if "." in symbol:
+            attempts.append(symbol.split(".", 1)[0])
+
+        seen: set[str] = set()
+        ordered_attempts: list[str] = []
+        for item in attempts:
+            norm = item.strip().upper()
+            if norm and norm not in seen:
+                seen.add(norm)
+                ordered_attempts.append(norm)
+
+        for candidate in ordered_attempts:
+            trial = self.skill_gateway.execute(
+                "mcp_finance",
+                {
+                    "_action": "get_historical_data_cached",
+                    "symbol": candidate,
+                    "period": "1mo",
+                    "interval": "1d",
+                },
+            )
+            if not trial.get("success", False):
+                continue
+
+            rows = self._extract_cached_rows(trial.get("data"))
+            if not rows:
+                continue
+
+            last = rows[-1] if isinstance(rows[-1], dict) else {}
+            close = last.get("close", last.get("price"))
+            if close in (None, ""):
+                continue
+            date = last.get("date") or last.get("datetime")
+
+            result = {
+                "symbol": symbol,
+                "price": close,
+                "currency": domain_context.currency,
+                "date": date,
+                "source": "cache_fallback",
+            }
+            return DomainOutput(
+                status="success",
+                result=result,
+                explanation=f"{symbol} está em {close} {domain_context.currency} (cache local).",
+                confidence=0.9,
+                metadata={"source": "cache_fallback", "original_error": original_error},
+            )
+
+        return None
+
+    def _extract_cached_rows(self, payload: Any) -> list[dict[str, Any]]:
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            # Envelope: {"success": true, "data": [...]}
+            if isinstance(payload.get("data"), list):
+                return [item for item in payload.get("data", []) if isinstance(item, dict)]
+            inner = payload.get("data")
+            if isinstance(inner, dict) and isinstance(inner.get("data"), list):
+                return [item for item in inner.get("data", []) if isinstance(item, dict)]
+        return []

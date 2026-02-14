@@ -17,3 +17,6 @@ dev = [
 
 [project.scripts]
 orchestrator = "main:main"
+
+[tool.pytest.ini_options]
+norecursedirs = ["scripts", ".venv", "__pycache__"]

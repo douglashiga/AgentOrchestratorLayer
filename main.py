@@ -42,8 +42,8 @@ from shared.models import EntryRequest
 logger = logging.getLogger(__name__)
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_INTENT_MODEL = "llama3.1:8b"
-OLLAMA_CHAT_MODEL = "qwen2.5-coder:32b"
+OLLAMA_INTENT_MODEL = os.getenv("OLLAMA_INTENT_MODEL", "llama3.1:8b")
+OLLAMA_CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", OLLAMA_INTENT_MODEL)
 MCP_URL = os.getenv("MCP_URL", "http://localhost:8000/sse")
 DB_PATH = os.getenv("DB_PATH", "agent.db")
 REGISTRY_DB_PATH = os.getenv("REGISTRY_DB_PATH", "registry.db")

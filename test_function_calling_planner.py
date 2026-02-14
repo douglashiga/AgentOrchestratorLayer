@@ -80,7 +80,7 @@ def test_function_calling_planner_adds_valid_step():
         domain="finance",
         capability="get_stock_price",
         confidence=0.99,
-        parameters={"symbol": "AAPL"},
+        parameters={"symbol": "AAPL", "notify": True},
         original_query="pega o preco e envia no telegram",
     )
 

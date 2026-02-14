@@ -56,7 +56,10 @@ async def lifespan(app: FastAPI):
     manifest = get_manifest()
     for cap in manifest["capabilities"]:
         # Register capability to a dummy handler so we can use get_metadata
-        mock_registry.register_capability(cap["name"], None, metadata=cap.get("metadata", {}))
+        cap_metadata = dict(cap.get("metadata", {}))
+        cap_metadata.setdefault("schema", cap.get("schema", {}))
+        cap_metadata.setdefault("description", cap.get("description", ""))
+        mock_registry.register_capability(cap["name"], None, metadata=cap_metadata)
 
     handler = FinanceDomainHandler(skill_gateway=skill_gateway, registry=mock_registry)
     
@@ -76,11 +79,15 @@ def health_check():
 # This enriches the raw MCP tools with Orchestrator-specific UI/Logic hints.
 METADATA_OVERRIDES = {
     "get_stock_price": {
-        "default_market": "SE",
         "explanation_template": "{symbol} is trading at {result[price]} {currency}.",
         "flow": {
             "pre": [
-                {"type": "resolve_symbol", "param": "symbol", "search_capability": "search_symbol"}
+                {
+                    "type": "resolve_symbol",
+                    "param": "symbol",
+                    "search_capability": "yahoo_search",
+                    "search_fallback_capabilities": ["search_symbol"],
+                }
             ]
         },
     },
@@ -88,7 +95,12 @@ METADATA_OVERRIDES = {
         "explanation_template": "Historical data for {symbol} ({params[period]}).",
         "flow": {
             "pre": [
-                {"type": "resolve_symbol", "param": "symbol", "search_capability": "search_symbol"}
+                {
+                    "type": "resolve_symbol",
+                    "param": "symbol",
+                    "search_capability": "yahoo_search",
+                    "search_fallback_capabilities": ["search_symbol"],
+                }
             ]
         },
     },
@@ -131,7 +143,12 @@ METADATA_OVERRIDES = {
         "explanation_template": "Fundamental comparison.",
         "flow": {
             "pre": [
-                {"type": "resolve_symbol_list", "param": "symbols", "search_capability": "search_symbol"}
+                {
+                    "type": "resolve_symbol_list",
+                    "param": "symbols",
+                    "search_capability": "yahoo_search",
+                    "search_fallback_capabilities": ["search_symbol"],
+                }
             ]
         },
     },

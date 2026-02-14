@@ -52,7 +52,7 @@ class RegistryLoader:
                     handler = HttpDomainHandler(
                         base_url=config["url"],
                         auth_token=config.get("auth_token"),
-                        timeout=config.get("timeout", 30.0)
+                        timeout=config.get("timeout", 60.0)
                     )
                 elif dtype == "local":
                     # Factory for local handlers

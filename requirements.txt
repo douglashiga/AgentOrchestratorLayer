@@ -21,7 +21,6 @@ jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 markdown-it-py==4.0.0
 mcp==1.26.0
--e git+https://github.com/douglashiga/MCP-Finance-Server.git@bb6831826a59472686758331717d2591ef03bd0a#egg=mcp_finance
 mdurl==0.1.2
 multitasking==0.0.12
 nest-asyncio==1.6.0

@@ -173,6 +173,13 @@ class FunctionCallingPlanner:
             return False
         if not self.capability_catalog:
             return False
+        # Reliability-first: only run the LLM planner when explicitly requested
+        # for composition/multi-step behavior.
+        if not (
+            (intent.parameters or {}).get("notify") is True
+            or (intent.parameters or {}).get("compose") is True
+        ):
+            return False
         if len(base_plan.steps) > 1 and self.mode != "required":
             return False
         if len(base_plan.steps) >= 4:

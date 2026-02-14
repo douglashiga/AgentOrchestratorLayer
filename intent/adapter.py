@@ -13,6 +13,7 @@ Failure → abort flow.
 
 import logging
 import json
+import re
 from typing import Any
 
 from models.selector import ModelSelector
@@ -70,17 +71,21 @@ class IntentAdapter:
                 raise ValueError("Model returned non-dict JSON")
 
             # Map to internal IntentOutput schema
-            return IntentOutput(
+            intent = IntentOutput(
                 domain=raw_data.get("domain", "general"),
                 capability=raw_data.get("action", "chat"), 
                 confidence=float(raw_data.get("confidence", 0.0)),
                 parameters=raw_data.get("parameters", {}),
                 original_query=input_text
             )
+            return self._apply_post_extraction_guard(intent, input_text)
             
         except Exception as e:
             # Fallback for critical failures
             logger.error("Intent extraction failed: %s", e)
+            deterministic = self._deterministic_fallback(input_text)
+            if deterministic:
+                return deterministic
             return IntentOutput(
                 domain="general",
                 capability="chat",
@@ -88,6 +93,86 @@ class IntentAdapter:
                 parameters={"message": input_text},
                 original_query=input_text
             )
+
+    def _deterministic_fallback(self, input_text: str) -> IntentOutput | None:
+        """
+        Deterministic rescue path when model extraction fails.
+        Keeps orchestrator clean and avoids dropping obvious finance requests to general chat.
+        """
+        text = (input_text or "").strip()
+        text_l = text.lower()
+        finance_keywords = ("preco", "preço", "cotacao", "cotação", "valor", "price", "ticker", "acao", "ação")
+        if not any(k in text_l for k in finance_keywords):
+            return None
+
+        if not self._has_capability("finance", "get_stock_price"):
+            return None
+
+        symbol = self._extract_symbol_from_text(text)
+        params: dict[str, Any] = {}
+        confidence = 0.85
+        if symbol:
+            params["symbol"] = symbol
+            confidence = 0.95
+
+        return IntentOutput(
+            domain="finance",
+            capability="get_stock_price",
+            confidence=confidence,
+            parameters=params,
+            original_query=input_text,
+        )
+
+    def _apply_post_extraction_guard(self, intent: IntentOutput, input_text: str) -> IntentOutput:
+        """
+        If model output drifts to general/chat for obvious price queries,
+        force deterministic finance intent.
+        """
+        if intent.domain == "general" and intent.capability == "chat":
+            deterministic = self._deterministic_fallback(input_text)
+            if deterministic:
+                return deterministic
+        return intent
+
+    def _has_capability(self, domain: str, capability: str) -> bool:
+        if self.capability_catalog:
+            return any(
+                str(item.get("domain", "")).strip() == domain
+                and str(item.get("capability", "")).strip() == capability
+                for item in self.capability_catalog
+            )
+        return capability in self.capabilities
+
+    def _extract_symbol_from_text(self, text: str) -> str | None:
+        upper = (text or "").upper()
+        if not upper:
+            return None
+
+        explicit = re.findall(r"\b([A-Z0-9-]{1,12}\.[A-Z]{1,4})\b", upper)
+        if explicit:
+            return explicit[0]
+
+        b3 = re.findall(r"\b([A-Z]{4}(?:3|4|5|6|11)(?:F)?)\b", upper)
+        if b3:
+            return f"{b3[0]}.SA"
+
+        quasi_ticker = re.findall(r"\b([A-Z]{3,8}\d{1,2}[A-Z]?)\b", upper)
+        if quasi_ticker:
+            token = quasi_ticker[0]
+            m = re.fullmatch(r"([A-Z]{5,8})(\d{1,2}[A-Z]?)", token)
+            if m:
+                letters, suffix = m.groups()
+                if suffix.startswith(("3", "4", "5", "6", "11")):
+                    compact = f"{letters[:4]}{suffix}"
+                    if re.fullmatch(r"[A-Z]{4}(?:3|4|5|6|11)(?:F)?", compact):
+                        return f"{compact}.SA"
+            return token
+
+        us = re.findall(r"\b([A-Z]{1,5})\b", text)
+        for token in us:
+            if token.isupper() and token.lower() not in {"qual", "valor", "preco", "price"}:
+                return token
+        return None
 
     def _render_capability_catalog(self) -> str:
         """Render domain/action catalog from runtime registry data."""

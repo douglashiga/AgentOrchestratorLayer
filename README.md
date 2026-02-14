@@ -32,6 +32,7 @@ graph TD
 - Capability discovery from remote manifests.
 - Multi-step composition driven by capability metadata (`metadata.composition`).
 - Function-calling planning loop with strict validation/fallback.
+- Function-calling planner runs only for explicit composition intents (`notify=true` or `compose=true`).
 - Deterministic guardrail: notifier steps are allowed only with explicit `notify=true`.
 - Capability pre-flow engine in finance service (metadata/schema-driven, no method hardcode).
 - Soft confirmation flow for low-confidence intents.
@@ -150,6 +151,7 @@ AgentOrchestratorLayer/
 
 - `OLLAMA_URL` (default `http://localhost:11434`)
 - `MCP_URL` (default `http://localhost:8000/sse`)
+- `MCP_ADAPTER_CALL_TIMEOUT_SECONDS` (default `90`)
 - `DB_PATH` (default `agent.db`)
 - `REGISTRY_DB_PATH` (default `registry.db`)
 - `MEMORY_DB_PATH` (default `memory.db`)
@@ -234,7 +236,7 @@ Example (`domains.bootstrap.json`):
     "type": "remote_http",
     "config": {
       "url": "http://finance-server:8001",
-      "timeout": 30.0
+      "timeout": 90.0
     },
     "sync_capabilities": true
   },
@@ -330,6 +332,30 @@ python3 -m pytest -q
 
 Important:
 - If `pytest` is not installed in your environment, install dependencies first.
+
+### Capability Accuracy (live domains)
+
+Evaluate all remote capabilities from manifests and compute pass rate
+(`success` + `clarification` count as pass):
+
+```bash
+python3 scripts/evaluate_capabilities.py
+```
+
+With explicit URLs/target:
+
+```bash
+FINANCE_DOMAIN_URL=http://localhost:8003 \
+COMMUNICATION_DOMAIN_URL=http://localhost:8002 \
+CAPABILITY_TARGET_PASS_RATE=90 \
+python3 scripts/evaluate_capabilities.py
+```
+
+Optional pytest gate (disabled by default):
+
+```bash
+RUN_LIVE_CAPABILITY_TESTS=1 python3 -m pytest -q test_capability_live_eval.py
+```
 
 ## Troubleshooting
 

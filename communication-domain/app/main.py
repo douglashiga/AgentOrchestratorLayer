@@ -19,6 +19,59 @@ app = FastAPI(
 telegram_service = TelegramService()
 
 
+def _classify_telegram_error(error_message: str) -> tuple[str, str, float, str]:
+    message = (error_message or "").strip()
+    lowered = message.lower()
+
+    if "message cannot be empty" in lowered:
+        return (
+            "clarification",
+            "A mensagem para envio está vazia. Informe o texto que deseja enviar.",
+            0.7,
+            "missing_message",
+        )
+    if "chat_id is required" in lowered:
+        return (
+            "clarification",
+            "Informe um chat_id válido ou configure TELEGRAM_DEFAULT_CHAT_ID.",
+            0.7,
+            "missing_chat_id",
+        )
+    if "not in telegram_allowed_chat_ids" in lowered:
+        return (
+            "clarification",
+            "Esse chat_id não está permitido. Atualize TELEGRAM_ALLOWED_CHAT_IDS ou use um chat autorizado.",
+            0.7,
+            "chat_not_allowed",
+        )
+    if "telegram_bot_token is not configured" in lowered or "telegram_unauthorized" in lowered:
+        return (
+            "clarification",
+            "Token do Telegram ausente/inválido. Configure TELEGRAM_BOT_TOKEN corretamente.",
+            0.6,
+            "token_configuration",
+        )
+    if (
+        "telegram_bad_request" in lowered
+        or "chat not found" in lowered
+        or "forbidden" in lowered
+        or "bot was blocked" in lowered
+    ):
+        return (
+            "clarification",
+            "Não consegui enviar para esse chat. Confirme o chat_id e inicie o bot no Telegram antes do envio.",
+            0.7,
+            "invalid_chat_target",
+        )
+
+    return (
+        "failure",
+        "Failed to send Telegram message.",
+        0.0,
+        "telegram_runtime_error",
+    )
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -125,12 +178,14 @@ def execute(intent: IntentInput) -> DomainOutput:
         parse_mode=str(parse_mode) if parse_mode else None,
     )
     if not send_result.get("success"):
+        error_message = str(send_result.get("error", "unknown_error"))
+        status, explanation, confidence, error_category = _classify_telegram_error(error_message)
         return DomainOutput(
-            status="failure",
+            status=status,
             result={},
-            explanation="Failed to send Telegram message.",
-            confidence=0.0,
-            metadata={"error": send_result.get("error", "unknown_error")},
+            explanation=explanation,
+            confidence=confidence,
+            metadata={"error": error_message, "error_category": error_category},
         )
 
     dry_run = bool(send_result.get("dry_run"))

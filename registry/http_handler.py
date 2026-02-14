@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class HttpDomainHandler:
     """Generic handler for remote HTTP domains."""
 
-    def __init__(self, base_url: str, auth_token: str | None = None, timeout: float = 30.0):
+    def __init__(self, base_url: str, auth_token: str | None = None, timeout: float = 60.0):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.headers = {"Content-Type": "application/json"}
@@ -53,11 +53,11 @@ class HttpDomainHandler:
                 return DomainOutput(**data)
 
         except httpx.RequestError as e:
-            logger.error("Network error calling remote domain: %s", e)
+            logger.error("Network error calling remote domain '%s': %r", url, e)
             return DomainOutput(
                 status="failure",
                 explanation=f"Network error connecting to domain: {e}",
-                metadata={"error": str(e)}
+                metadata={"error": str(e), "error_type": type(e).__name__, "url": url}
             )
         except Exception as e:
             logger.error("Unexpected error in HttpDomainHandler: %s", e)

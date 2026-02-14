@@ -68,11 +68,42 @@ class TelegramService:
                 response = client.post(url, json=payload)
                 response.raise_for_status()
                 data = response.json()
+        except httpx.HTTPStatusError as e:
+            response = e.response
+            status_code = response.status_code
+            description = ""
+            try:
+                body = response.json()
+                if isinstance(body, dict):
+                    description = str(body.get("description", "")).strip()
+                if not description:
+                    description = str(body)
+            except Exception:
+                description = (response.text or "").strip()
+
+            prefix = "telegram_http_error"
+            if status_code == 400:
+                prefix = "telegram_bad_request"
+            elif status_code == 401:
+                prefix = "telegram_unauthorized"
+            elif status_code == 403:
+                prefix = "telegram_forbidden"
+
+            details = description or str(e)
+            return {"success": False, "error": f"{prefix}: {details}"}
+        except httpx.TimeoutException as e:
+            return {"success": False, "error": f"telegram_timeout: {e}"}
+        except httpx.RequestError as e:
+            return {"success": False, "error": f"telegram_network_error: {e}"}
         except Exception as e:
-            return {"success": False, "error": f"Telegram API error: {e}"}
+            return {"success": False, "error": f"telegram_unexpected_error: {e}"}
 
         if not data.get("ok"):
-            return {"success": False, "error": f"Telegram API rejected request: {data}"}
+            description = ""
+            if isinstance(data, dict):
+                description = str(data.get("description", "")).strip()
+            details = description or str(data)
+            return {"success": False, "error": f"telegram_rejected: {details}"}
 
         result = data.get("result", {})
         return {
