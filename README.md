@@ -35,6 +35,7 @@ graph TD
 - Soft confirmation flow for low-confidence intents.
 - Telegram entry channel with per-step JSON debug trace.
 - OpenAI-compatible API for Open WebUI.
+- Streaming support (`stream=true`) with incremental status updates for better UX.
 
 ## Memory Store (Semantic-Kernel style)
 
@@ -185,6 +186,8 @@ Example `PLANNER_MEMORY_PARAM_MAP_JSON`:
 
 - `OPENAI_API_DEBUG_TRACE` (default `true`)
 - `OPENAI_API_INCLUDE_SUGGESTIONS` (default `true`)
+- `OPENAI_API_STREAM_STATUS_UPDATES` (default `true`)
+- `OPENAI_API_STREAM_CHUNK_SIZE` (default `160`)
 - `OPENAI_API_BASE_URL` (for Open WebUI)
 - `OPENAI_API_KEY` (for Open WebUI)
 
@@ -256,6 +259,10 @@ Endpoints:
 - `GET /health`
 - `GET /v1/models`
 - `POST /v1/chat/completions`
+
+Streaming:
+- Send `"stream": true` to receive SSE chunks (`chat.completion.chunk`).
+- The API emits early status messages before final content to improve perceived latency.
 
 ## Admin Commands
 
