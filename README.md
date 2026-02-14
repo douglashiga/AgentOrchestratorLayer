@@ -144,6 +144,9 @@ Example `domains.bootstrap.json`:
 - `BOOTSTRAP_DOMAINS_FILE`
 - `AUTO_SYNC_REMOTE_CAPABILITIES` (default: `true`)
 - `SEED_CORE_DEFAULTS` (default: `true`)
+- `SOFT_CONFIRMATION_ENABLED` (default: `true`)
+- `SOFT_CONFIRM_MIN_CONFIDENCE` (default: `0.90`)
+- `SOFT_CONFIRM_MAX_CONFIDENCE` (default: `0.98`)
 
 ### Communication domain env vars
 

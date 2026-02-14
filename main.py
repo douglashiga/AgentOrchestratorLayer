@@ -10,6 +10,7 @@ import logging
 import sys
 import os
 import asyncio
+import re
 from pathlib import Path
 
 from rich.console import Console
@@ -57,6 +58,14 @@ SEED_CORE_DEFAULTS = os.getenv("SEED_CORE_DEFAULTS", "true").strip().lower() in 
     "yes",
     "on",
 )
+SOFT_CONFIRMATION_ENABLED = os.getenv("SOFT_CONFIRMATION_ENABLED", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+SOFT_CONFIRM_MIN_CONFIDENCE = float(os.getenv("SOFT_CONFIRM_MIN_CONFIDENCE", "0.90"))
+SOFT_CONFIRM_MAX_CONFIDENCE = float(os.getenv("SOFT_CONFIRM_MAX_CONFIDENCE", "0.98"))
 
 # ─── Rich Console ───────────────────────────────────────────────
 
@@ -117,6 +126,112 @@ def _load_bootstrap_domains() -> list[dict]:
             logger.warning("Failed to parse BOOTSTRAP_DOMAINS_FILE '%s': %s", path, e)
 
     return []
+
+
+def _is_yes(text: str) -> bool:
+    return text.strip().lower() in {"sim", "s", "yes", "y", "ok", "confirmo", "confirmar"}
+
+
+def _is_no(text: str) -> bool:
+    return text.strip().lower() in {"nao", "não", "n", "no", "cancelar", "cancela"}
+
+
+def _looks_like_chat_id(value: str) -> bool:
+    return bool(re.fullmatch(r"-?\d+", value.strip()))
+
+
+def _extract_message_candidate(query: str) -> str | None:
+    q = query.strip()
+    patterns = [
+        r"(?:dizendo|fala(?:ndo)?|mensagem)\s+(.+)$",
+        r"(?:saying|message)\s+(.+)$",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, q, re.IGNORECASE)
+        if m:
+            candidate = m.group(1).strip().strip("\"'")
+            if candidate:
+                return candidate
+    return None
+
+
+def _normalize_intent_parameters(intent, registry):
+    """Normalize alias params and apply metadata defaults before planning/execution."""
+    params = dict(intent.parameters or {})
+    capability = intent.capability
+
+    # Common aliases from LLM output drift.
+    alias_map = {
+        "stock_symbol": "symbol",
+        "ticker": "symbol",
+        "text": "message",
+        "group": "group_id",
+    }
+    for alias, canonical in alias_map.items():
+        if alias in params and canonical not in params:
+            params[canonical] = params[alias]
+
+    # Communication fixes: message inference + chat_id normalization.
+    if capability in ("send_telegram_message", "send_telegram_group_message"):
+        if not params.get("message"):
+            inferred = _extract_message_candidate(intent.original_query)
+            if inferred:
+                params["message"] = inferred
+
+        default_chat_id = os.getenv("TELEGRAM_DEFAULT_CHAT_ID", "").strip()
+        if capability == "send_telegram_group_message":
+            if not params.get("group_id") and params.get("chat_id"):
+                params["group_id"] = params.get("chat_id")
+            if not params.get("group_id") and default_chat_id:
+                params["group_id"] = default_chat_id
+            if params.get("group_id") and not _looks_like_chat_id(str(params["group_id"])) and default_chat_id:
+                params["group_id"] = default_chat_id
+        else:
+            if not params.get("chat_id") and default_chat_id:
+                params["chat_id"] = default_chat_id
+            if params.get("chat_id") and not _looks_like_chat_id(str(params["chat_id"])) and default_chat_id:
+                params["chat_id"] = default_chat_id
+
+    # Apply metadata defaults for missing/null params.
+    metadata = registry.get_metadata(capability) if registry else {}
+    for key, value in metadata.items():
+        if key.startswith("default_"):
+            param_name = key.replace("default_", "")
+            if param_name not in params or params[param_name] in (None, ""):
+                params[param_name] = value
+
+    return intent.model_copy(update={"parameters": params})
+
+
+def _should_soft_confirm(intent) -> bool:
+    if not SOFT_CONFIRMATION_ENABLED:
+        return False
+    if intent.domain == "general":
+        return False
+    return SOFT_CONFIRM_MIN_CONFIDENCE <= intent.confidence < SOFT_CONFIRM_MAX_CONFIDENCE
+
+
+def _build_soft_confirmation_message(intent, registry) -> str:
+    metadata = registry.get_metadata(intent.capability) if registry else {}
+    params = dict(intent.parameters or {})
+    defaults_used: list[str] = []
+    for key, value in metadata.items():
+        if key.startswith("default_"):
+            param_name = key.replace("default_", "")
+            if params.get(param_name) == value:
+                defaults_used.append(f"{param_name}={value}")
+
+    params_preview = json.dumps(params, ensure_ascii=False)
+    lines = [
+        "Entendi sua solicitação assim:",
+        f"- Domínio: {intent.domain}",
+        f"- Ação: {intent.capability}",
+        f"- Parâmetros: {params_preview}",
+    ]
+    if defaults_used:
+        lines.append(f"- Valores padrão aplicados: {', '.join(defaults_used)}")
+    lines.append("Confirmo a execução com esses valores? (sim/não)")
+    return "\n".join(lines)
 
 
 def build_pipeline() -> tuple[
@@ -304,6 +419,7 @@ async def run_agent_loop() -> None:
     conversation: ConversationManager | None = None
     model_selector: ModelSelector | None = None
     mcp_adapter: MCPAdapter | None = None
+    pending_confirmation_intent = None
 
     console.print(Panel(
         Text.from_markup(
@@ -358,23 +474,63 @@ async def run_agent_loop() -> None:
                 # Step 2: Conversation — get history
                 history = conversation.get_history(entry_request.session_id)
 
-                # Step 3: Intent Adapter — extract intent (LLM)
-                with console.status("[yellow]Thinking...[/yellow]", spinner="dots"):
-                    try:
-                        # Intent extraction is still sync/blocking (HTTP client), which is fine for CLI
-                        intent = intent_adapter.extract(
-                            entry_request.input_text,
-                            history,
-                            session_id=entry_request.session_id,
-                        )
-                    except ValueError as e:
-                        console.print(f"\n[bold red]Intent extraction failed:[/] {e}")
+                # Handle one-shot confirmation flow first.
+                if pending_confirmation_intent is not None:
+                    if _is_yes(entry_request.input_text):
+                        intent = pending_confirmation_intent.model_copy(update={"confidence": 1.0})
+                        pending_confirmation_intent = None
+                        console.print("[dim]Confirmação recebida. Executando...[/dim]")
+                    elif _is_no(entry_request.input_text):
+                        pending_confirmation_intent = None
+                        msg = "Perfeito. Me diga novamente como deseja executar."
+                        console.print(Panel(Text(msg, style="bold yellow"), title="❓ Confirmation", border_style="yellow", box=box.ROUNDED))
                         conversation.save(entry_request.session_id, "user", entry_request.input_text)
-                        conversation.save(entry_request.session_id, "assistant", f"Error: {e}")
+                        conversation.save(entry_request.session_id, "assistant", msg)
+                        console.print()
                         continue
+                    else:
+                        msg = "Responda apenas 'sim' ou 'não' para confirmar."
+                        console.print(Panel(Text(msg, style="bold yellow"), title="❓ Confirmation", border_style="yellow", box=box.ROUNDED))
+                        conversation.save(entry_request.session_id, "user", entry_request.input_text)
+                        conversation.save(entry_request.session_id, "assistant", msg)
+                        console.print()
+                        continue
+                else:
+                    # Step 3: Intent Adapter — extract intent (LLM)
+                    with console.status("[yellow]Thinking...[/yellow]", spinner="dots"):
+                        try:
+                            # Intent extraction is still sync/blocking (HTTP client), which is fine for CLI
+                            intent = intent_adapter.extract(
+                                entry_request.input_text,
+                                history,
+                                session_id=entry_request.session_id,
+                            )
+                        except ValueError as e:
+                            console.print(f"\n[bold red]Intent extraction failed:[/] {e}")
+                            conversation.save(entry_request.session_id, "user", entry_request.input_text)
+                            conversation.save(entry_request.session_id, "assistant", f"Error: {e}")
+                            continue
 
-                # Show intent debug
-                render_intent_debug(intent)
+                    intent = _normalize_intent_parameters(intent, engine.orchestrator.domain_registry)
+
+                    # Show intent debug
+                    render_intent_debug(intent)
+
+                    # Soft confirmation once, then execute on explicit "sim".
+                    if _should_soft_confirm(intent):
+                        question = _build_soft_confirmation_message(intent, engine.orchestrator.domain_registry)
+                        pending_confirmation_intent = intent
+                        console.print()
+                        console.print(Panel(
+                            Text(question, style="bold yellow"),
+                            title="❓ Confirm Action",
+                            border_style="yellow",
+                            box=box.ROUNDED,
+                        ))
+                        conversation.save(entry_request.session_id, "user", entry_request.input_text)
+                        conversation.save(entry_request.session_id, "assistant", question)
+                        console.print()
+                        continue
 
                 # Step 4: Planner (Decomposition)
                 with console.status("[blue]Planning...[/blue]", spinner="dots"):
