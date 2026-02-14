@@ -36,6 +36,7 @@ from skills.implementations.mcp_adapter import MCPAdapter
 from memory.store import SQLiteMemoryStore
 from models.selector import ModelSelector
 from shared.models import EntryRequest
+from shared.response_formatter import format_domain_output
 
 # ─── Configuration ──────────────────────────────────────────────
 
@@ -79,7 +80,7 @@ TELEGRAM_ENTRY_ALLOWED_CHAT_IDS = {
     for item in os.getenv("TELEGRAM_ENTRY_ALLOWED_CHAT_IDS", "").split(",")
     if item.strip()
 }
-TELEGRAM_ENTRY_DEBUG = os.getenv("TELEGRAM_ENTRY_DEBUG", "true").strip().lower() in (
+TELEGRAM_ENTRY_DEBUG = os.getenv("TELEGRAM_ENTRY_DEBUG", "false").strip().lower() in (
     "1",
     "true",
     "yes",
@@ -730,9 +731,9 @@ async def run_telegram_loop() -> None:
 
                     conversation.save(entry_request.session_id, "user", entry_request.input_text)
                     if output.status in ("success", "clarification"):
-                        response_text = output.explanation
+                        response_text = format_domain_output(output, channel="telegram")
                     else:
-                        response_text = f"Error: {output.metadata.get('error', 'unknown')}"
+                        response_text = format_domain_output(output, channel="telegram")
                     conversation.save(entry_request.session_id, "assistant", response_text)
 
                     await telegram_entry.send_message(chat_id, response_text)
@@ -899,9 +900,9 @@ async def run_agent_loop() -> None:
                 # Step 9: Persist conversation
                 conversation.save(entry_request.session_id, "user", entry_request.input_text)
                 if output.status in ("success", "clarification"):
-                    response_text = output.explanation
+                    response_text = format_domain_output(output, channel="frontend")
                 else:
-                    response_text = f"Error: {output.metadata.get('error', 'unknown')}"
+                    response_text = format_domain_output(output, channel="frontend")
                 conversation.save(entry_request.session_id, "assistant", response_text)
 
                 console.print()

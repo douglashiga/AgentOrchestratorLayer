@@ -22,8 +22,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from main import build_pipeline, _normalize_intent_parameters
+from shared.delivery_layer import build_delivery_payload
 
-OPENAI_API_DEBUG_TRACE = os.getenv("OPENAI_API_DEBUG_TRACE", "true").strip().lower() in (
+OPENAI_API_DEBUG_TRACE = os.getenv("OPENAI_API_DEBUG_TRACE", "false").strip().lower() in (
     "1",
     "true",
     "yes",
@@ -183,7 +184,7 @@ async def _run_agent_turn(
     intent_adapter: Any,
     planner: Any,
     engine: Any,
-) -> tuple[str, str, dict[str, Any], list[dict[str, str]]]:
+) -> tuple[str, str, dict[str, Any], list[dict[str, str]], dict[str, Any]]:
     history = conversation.get_history(session_id)
     intent = intent_adapter.extract(user_text, history, session_id=session_id)
     intent_extracted = intent.model_dump(mode="json")
@@ -192,7 +193,9 @@ async def _run_agent_turn(
     plan = planner.generate_plan(intent, session_id=session_id)
     plan_dump = plan.model_dump(mode="json")
     output = await engine.execute_plan(plan, original_intent=intent)
-    base_text = output.explanation if output.explanation else str(output.result)
+    delivery = build_delivery_payload(output)
+    base_text = delivery.content
+    clean_response_text = base_text.strip()
     debug_payload = {
         "entry": {
             "session_id": session_id,
@@ -211,8 +214,13 @@ async def _run_agent_turn(
         debug_payload=debug_payload,
     )
     conversation.save(session_id, "user", user_text)
-    conversation.save(session_id, "assistant", response_text)
-    return response_text, intent.capability, debug_payload, suggestions
+    # Keep history clean for better context quality in subsequent turns.
+    conversation.save(session_id, "assistant", clean_response_text)
+    return response_text, intent.capability, debug_payload, suggestions, {
+        "kind": delivery.kind,
+        "content": delivery.content,
+        "data": delivery.data,
+    }
 
 
 @asynccontextmanager
@@ -308,7 +316,7 @@ async def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
                     await asyncio.sleep(0.01)
 
             try:
-                response_text, _cap, debug_payload, suggestions = await _run_agent_turn(
+                response_text, _cap, debug_payload, suggestions, delivery = await _run_agent_turn(
                     session_id=session_id,
                     user_text=user_text,
                     conversation=conversation,
@@ -345,6 +353,7 @@ async def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
                         "model": request.model,
                         "x_openwebui": {
                             "suggestions": suggestions,
+                            "delivery": delivery,
                             "debug": debug_payload if OPENAI_API_DEBUG_TRACE else {},
                         },
                     }
@@ -372,7 +381,7 @@ async def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
-    response_text, intent_capability, debug_payload, suggestions = await _run_agent_turn(
+    response_text, intent_capability, debug_payload, suggestions, delivery = await _run_agent_turn(
         session_id=session_id,
         user_text=user_text,
         conversation=conversation,
@@ -400,6 +409,7 @@ async def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
         "x_openwebui": {
             "suggestions": suggestions,
             "intent_capability": intent_capability,
+            "delivery": delivery,
             "debug": debug_payload if OPENAI_API_DEBUG_TRACE else {},
         },
         "usage": {
