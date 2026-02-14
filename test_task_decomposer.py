@@ -80,3 +80,72 @@ def test_default_plan_is_single_step():
     plan = decomposer.decompose(intent)
     assert plan.execution_mode == "sequential"
     assert len(plan.steps) == 1
+
+
+def test_method_contract_takes_precedence_over_legacy_composition() -> None:
+    decomposer = TaskDecomposer(
+        capability_catalog=[
+            {
+                "domain": "finance",
+                "capability": "get_stock_price",
+                "metadata": {
+                    "workflow": {
+                        "execution_mode": "dag",
+                        "nodes": [
+                            {"id": "resolve", "kind": "resolve"},
+                            {"id": "fetch", "kind": "call"},
+                        ],
+                        "edges": [
+                            {"from_node": "resolve", "to_node": "fetch"},
+                        ],
+                    },
+                    "composition": {
+                        "followup_roles": ["notifier"],
+                        "enabled_if": {"path": "parameters.notify", "equals": True},
+                    },
+                },
+            },
+            {
+                "domain": "communication",
+                "capability": "send_telegram_message",
+                "metadata": {
+                    "composition": {
+                        "role": "notifier",
+                        "priority": 100,
+                        "param_map": {"message": {"default": "${1.explanation}"}},
+                    }
+                },
+            },
+        ]
+    )
+    intent = IntentOutput(
+        domain="finance",
+        capability="get_stock_price",
+        confidence=1.0,
+        parameters={"symbol": "AAPL", "notify": True},
+        original_query="pegue preço e mande",
+    )
+
+    plan = decomposer.decompose(intent)
+    assert plan.execution_mode == "sequential"
+    assert len(plan.steps) == 1
+    assert plan.steps[0].capability == "get_stock_price"
+
+
+def test_multi_symbol_get_price_generates_parallel_dag() -> None:
+    decomposer = TaskDecomposer(capability_catalog=[])
+    intent = IntentOutput(
+        domain="finance",
+        capability="get_stock_price",
+        confidence=1.0,
+        parameters={"symbols": ["PETR4.SA", "VALE3.SA"], "notify": True},
+        original_query="qual o valor da petro e da vale",
+    )
+
+    plan = decomposer.decompose(intent)
+    assert plan.execution_mode == "dag"
+    assert plan.combine_mode == "report"
+    assert len(plan.steps) == 2
+    assert plan.steps[0].params.get("symbol") == "PETR4.SA"
+    assert plan.steps[1].params.get("symbol") == "VALE3.SA"
+    assert all(step.capability == "get_stock_price" for step in plan.steps)

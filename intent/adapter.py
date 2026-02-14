@@ -14,6 +14,7 @@ Failure → abort flow.
 import logging
 import json
 import re
+import os
 from typing import Any
 
 from models.selector import ModelSelector
@@ -33,11 +34,17 @@ class IntentAdapter:
         self.model_selector = model_selector
         self.capabilities = initial_capabilities or []
         self.capability_catalog = capability_catalog or []
+        intent_timeout_seconds = float(os.getenv("INTENT_MODEL_TIMEOUT_SECONDS", "20"))
+        intent_max_retries = int(os.getenv("INTENT_MODEL_MAX_RETRIES", "3"))
+        intent_model_name = os.getenv(
+            "INTENT_MODEL_NAME",
+            os.getenv("OLLAMA_INTENT_MODEL", "llama3.1:8b"),
+        ).strip() or "llama3.1:8b"
         self.policy = ModelPolicy(
-            model_name="llama3.1:8b",
+            model_name=intent_model_name,
             temperature=0.0,
-            timeout_seconds=10.0,  # Fast timeout for intent
-            max_retries=3,
+            timeout_seconds=max(1.0, intent_timeout_seconds),
+            max_retries=max(1, intent_max_retries),
             json_mode=True,
         )
 
@@ -109,11 +116,14 @@ class IntentAdapter:
         if not self._has_capability("finance", "get_stock_price"):
             return None
 
-        symbol = self._extract_symbol_from_text(text)
+        symbols = self._extract_symbols_from_text(text)
         params: dict[str, Any] = {}
         confidence = 0.85
-        if symbol:
-            params["symbol"] = symbol
+        if symbols:
+            if len(symbols) == 1:
+                params["symbol"] = symbols[0]
+            else:
+                params["symbols"] = symbols
             confidence = 0.95
 
         return IntentOutput(
@@ -141,13 +151,28 @@ class IntentAdapter:
         from the user sentence (e.g. notify/send/share after primary action).
         """
         params = dict(intent.parameters or {})
+        confidence = float(intent.confidence)
+        if (
+            intent.domain == "finance"
+            and intent.capability == "get_stock_price"
+            and not params.get("symbol")
+            and not (isinstance(params.get("symbols"), list) and params.get("symbols"))
+        ):
+            inferred_symbols = self._extract_symbols_from_text(input_text)
+            if inferred_symbols:
+                if len(inferred_symbols) == 1:
+                    params["symbol"] = inferred_symbols[0]
+                else:
+                    params["symbols"] = inferred_symbols
+                confidence = max(confidence, 0.95)
+
         notify_detected = self._infer_notify_from_text(input_text)
         if notify_detected:
             params["notify"] = True
             # For explicit send/share requests, avoid unnecessary soft confirmation.
             if intent.domain != "general":
-                return intent.model_copy(update={"parameters": params, "confidence": max(intent.confidence, 0.95)})
-        return intent.model_copy(update={"parameters": params})
+                return intent.model_copy(update={"parameters": params, "confidence": max(confidence, 0.95)})
+        return intent.model_copy(update={"parameters": params, "confidence": confidence})
 
     def _infer_notify_from_text(self, input_text: str) -> bool:
         text = (input_text or "").strip().lower()
@@ -178,35 +203,86 @@ class IntentAdapter:
         return capability in self.capabilities
 
     def _extract_symbol_from_text(self, text: str) -> str | None:
+        symbols = self._extract_symbols_from_text(text)
+        return symbols[0] if symbols else None
+
+    def _extract_symbols_from_text(self, text: str) -> list[str]:
         upper = (text or "").upper()
         if not upper:
-            return None
+            return []
+
+        aliases = {
+            "PETRO": "PETR4.SA",
+            "PETROBRAS": "PETR4.SA",
+            "VALE": "VALE3.SA",
+            "NORDEA": "NDA-SE.ST",
+        }
+        collected: list[str] = []
+
+        def add_symbol(value: str) -> None:
+            symbol = value.strip().upper()
+            if not symbol:
+                return
+            if symbol not in collected:
+                collected.append(symbol)
 
         explicit = re.findall(r"\b([A-Z0-9-]{1,12}\.[A-Z]{1,4})\b", upper)
-        if explicit:
-            return explicit[0]
+        for item in explicit:
+            add_symbol(item)
 
         b3 = re.findall(r"\b([A-Z]{4}(?:3|4|5|6|11)(?:F)?)\b", upper)
-        if b3:
-            return f"{b3[0]}.SA"
+        for item in b3:
+            add_symbol(f"{item}.SA")
 
         quasi_ticker = re.findall(r"\b([A-Z]{3,8}\d{1,2}[A-Z]?)\b", upper)
-        if quasi_ticker:
-            token = quasi_ticker[0]
+        for token in quasi_ticker:
             m = re.fullmatch(r"([A-Z]{5,8})(\d{1,2}[A-Z]?)", token)
             if m:
                 letters, suffix = m.groups()
                 if suffix.startswith(("3", "4", "5", "6", "11")):
                     compact = f"{letters[:4]}{suffix}"
                     if re.fullmatch(r"[A-Z]{4}(?:3|4|5|6|11)(?:F)?", compact):
-                        return f"{compact}.SA"
-            return token
+                        add_symbol(f"{compact}.SA")
+                        continue
+            add_symbol(token)
 
-        us = re.findall(r"\b([A-Z]{1,5})\b", text)
+        for alias_name, canonical in aliases.items():
+            if re.search(rf"\b{re.escape(alias_name)}\b", upper):
+                add_symbol(canonical)
+
+        us = re.findall(r"\b([A-Z]{1,5})\b", upper)
+        stopwords = {
+            "QUAL",
+            "VALOR",
+            "PRECO",
+            "PRICE",
+            "ACAO",
+            "AÇÃO",
+            "BOLSA",
+            "SUECIA",
+            "SUÉCIA",
+            "DA",
+            "DE",
+            "DO",
+            "E",
+            "NA",
+            "NO",
+            "EM",
+            "PARA",
+            "ME",
+        }
         for token in us:
-            if token.isupper() and token.lower() not in {"qual", "valor", "preco", "price"}:
-                return token
-        return None
+            if token in stopwords:
+                continue
+            if len(token) < 2:
+                continue
+            if token in aliases:
+                # Alias names are already mapped to canonical tickers.
+                continue
+            if token.isupper():
+                add_symbol(token)
+
+        return collected
 
     def _render_capability_catalog(self) -> str:
         """Render domain/action catalog from runtime registry data."""

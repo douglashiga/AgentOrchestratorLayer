@@ -34,9 +34,16 @@ def test_symbol_resolution_returns_clarification_for_ambiguous_match():
         }
     )
     handler = FinanceDomainHandler(skill_gateway=gateway, registry=None)
-    out = handler._resolve_symbol_value("vale", step={"search_capability": "search_symbol"})
+    out = handler._resolve_symbol_value("vale2", step={"search_capability": "search_symbol"})
     assert getattr(out, "status", "") == "clarification"
     assert "VALE3.SA" in out.explanation
+
+
+def test_symbol_resolution_uses_alias_for_plain_company_name():
+    gateway = DummyGateway({"success": False, "error": "should_not_be_called"})
+    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None)
+    out = handler._resolve_symbol_value("vale", step={"search_capability": "search_symbol"})
+    assert out == "VALE3.SA"
 
 
 def test_symbol_resolution_picks_single_match():

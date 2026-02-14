@@ -32,3 +32,25 @@ def test_intent_enrichment_sets_notify_and_confidence_floor():
     assert intent.confidence >= 0.95
     assert intent.domain == "finance"
     assert intent.capability == "get_stock_price"
+
+
+def test_intent_enrichment_extracts_multiple_symbols_for_price_queries():
+    adapter = IntentAdapter(
+        model_selector=DummyModelSelector(
+            {
+                "domain": "finance",
+                "action": "get_stock_price",
+                "confidence": 0.88,
+                "parameters": {},
+            }
+        ),
+        capability_catalog=[
+            {"domain": "finance", "capability": "get_stock_price"},
+        ],
+    )
+
+    intent = adapter.extract("qual o valor da petro e da vale?")
+    assert intent.domain == "finance"
+    assert intent.capability == "get_stock_price"
+    assert intent.parameters.get("symbols") == ["PETR4.SA", "VALE3.SA"]
+    assert intent.confidence >= 0.95

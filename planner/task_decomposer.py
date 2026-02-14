@@ -12,6 +12,7 @@ import json
 from typing import Any
 
 from shared.models import ExecutionPlan, ExecutionStep, IntentOutput
+from shared.safe_eval import safe_eval_bool
 
 
 class TaskDecomposer:
@@ -26,8 +27,15 @@ class TaskDecomposer:
     def decompose(self, intent: IntentOutput) -> ExecutionPlan:
         """Decompose intent into 1..N execution steps."""
         base_step = self._build_primary_step(intent)
+        multi_symbol_plan = self._build_multi_symbol_price_plan(intent)
+        if multi_symbol_plan is not None:
+            return multi_symbol_plan
+
         source_entry = self._find_capability_entry(intent.domain, intent.capability)
         source_meta = self._metadata_of(source_entry)
+        if self._has_method_contract(source_meta):
+            return self._single_step_plan(base_step)
+
         composition_cfg = source_meta.get("composition")
         if not isinstance(composition_cfg, dict):
             return self._single_step_plan(base_step)
@@ -59,11 +67,19 @@ class TaskDecomposer:
         )
 
     def _build_primary_step(self, intent: IntentOutput) -> ExecutionStep:
+        params = dict(intent.parameters)
+        if not params.get("symbol"):
+            symbols = params.get("symbols")
+            if isinstance(symbols, list) and symbols:
+                first = symbols[0]
+                if isinstance(first, str) and first.strip():
+                    params["symbol"] = first.strip()
+
         return ExecutionStep(
             id=1,
             domain=intent.domain,
             capability=intent.capability,
-            params=dict(intent.parameters),
+            params=params,
             depends_on=[],
             required=True,
             output_key="primary",
@@ -109,6 +125,8 @@ class TaskDecomposer:
     def _eval_condition(self, condition: Any, context: dict[str, Any]) -> bool:
         if isinstance(condition, bool):
             return condition
+        if isinstance(condition, str):
+            return safe_eval_bool(condition, context, default=False)
         if not isinstance(condition, dict):
             return False
 
@@ -133,6 +151,91 @@ class TaskDecomposer:
         if "in" in condition and isinstance(condition["in"], list):
             return value in condition["in"]
         return False
+
+    def _has_method_contract(self, metadata: dict[str, Any]) -> bool:
+        if not isinstance(metadata, dict):
+            return False
+
+        method_spec = metadata.get("method_spec")
+        if isinstance(method_spec, str):
+            try:
+                method_spec = json.loads(method_spec)
+            except Exception:
+                method_spec = None
+        if isinstance(method_spec, dict) and isinstance(method_spec.get("workflow"), dict):
+            return True
+
+        workflow = metadata.get("workflow")
+        if isinstance(workflow, str):
+            try:
+                workflow = json.loads(workflow)
+            except Exception:
+                workflow = None
+        return isinstance(workflow, dict)
+
+    def _build_multi_symbol_price_plan(self, intent: IntentOutput) -> ExecutionPlan | None:
+        if intent.capability != "get_stock_price":
+            return None
+        symbols = self._symbols_from_params(intent.parameters)
+        if len(symbols) <= 1:
+            return None
+
+        shared_params = {
+            key: value
+            for key, value in (intent.parameters or {}).items()
+            if key not in {"symbol", "symbols"}
+        }
+        steps: list[ExecutionStep] = []
+        for idx, symbol in enumerate(symbols, start=1):
+            params = dict(shared_params)
+            params["symbol"] = symbol
+            steps.append(
+                ExecutionStep(
+                    id=idx,
+                    domain=intent.domain,
+                    capability="get_stock_price",
+                    params=params,
+                    depends_on=[],
+                    required=True,
+                    output_key=f"price_{idx}",
+                )
+            )
+
+        return ExecutionPlan(
+            execution_mode="dag",
+            combine_mode="report",
+            max_concurrency=min(4, max(1, len(steps))),
+            steps=steps,
+        )
+
+    def _symbols_from_params(self, params: dict[str, Any]) -> list[str]:
+        if not isinstance(params, dict):
+            return []
+
+        symbols: list[str] = []
+        symbol_single = params.get("symbol")
+        if isinstance(symbol_single, str) and symbol_single.strip():
+            symbols.append(symbol_single.strip())
+
+        symbol_list = params.get("symbols")
+        if isinstance(symbol_list, list):
+            for item in symbol_list:
+                if not isinstance(item, str):
+                    continue
+                text = item.strip()
+                if not text:
+                    continue
+                symbols.append(text)
+
+        dedup: list[str] = []
+        seen: set[str] = set()
+        for item in symbols:
+            key = item.upper()
+            if key in seen:
+                continue
+            seen.add(key)
+            dedup.append(item)
+        return dedup
 
     def _resolve_path(self, payload: Any, path: str) -> Any:
         current = payload

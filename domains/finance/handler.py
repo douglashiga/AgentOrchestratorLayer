@@ -38,6 +38,12 @@ class FinanceDomainHandler:
         self.strategy_core = StrategyCore()
         self.skill_gateway = skill_gateway
         self.registry = registry
+        self.symbol_aliases: dict[str, str] = {
+            "PETRO": "PETR4.SA",
+            "PETROBRAS": "PETR4.SA",
+            "VALE": "VALE3.SA",
+            "NORDEA": "NDA-SE.ST",
+        }
 
     async def execute(self, intent: IntentOutput) -> DomainOutput:
         """
@@ -541,6 +547,20 @@ class FinanceDomainHandler:
 
         return None
 
+    def _resolve_symbol_alias(self, raw_symbol: str) -> str | None:
+        normalized = (raw_symbol or "").strip().upper()
+        if not normalized:
+            return None
+
+        direct = self.symbol_aliases.get(normalized)
+        if direct:
+            return direct
+
+        compact = re.sub(r"[^A-Z0-9]", "", normalized)
+        if compact != normalized:
+            return self.symbol_aliases.get(compact)
+        return None
+
     def _flow_resolve_symbol_list(self, step: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | DomainOutput:
         field = str(step.get("param", "symbols")).strip() or "symbols"
         raw_values = params.get(field)
@@ -576,6 +596,10 @@ class FinanceDomainHandler:
                 explanation="Informe um ticker válido (ex: VALE3.SA, PETR4.SA, AAPL).",
                 confidence=1.0,
             )
+
+        alias_symbol = self._resolve_symbol_alias(symbol_norm)
+        if alias_symbol:
+            return alias_symbol
 
         normalized_canonical = self._normalize_canonical_symbol(symbol_norm)
         is_plain_alpha = bool(re.fullmatch(r"[A-Z]{1,5}", symbol_norm))

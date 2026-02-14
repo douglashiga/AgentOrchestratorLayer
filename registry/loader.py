@@ -9,6 +9,7 @@ Responsibility:
 
 import logging
 import json
+import os
 from typing import Any
 
 from registry.db import RegistryDB
@@ -22,6 +23,7 @@ from skills.gateway import SkillGateway
 from models.selector import ModelSelector
 
 logger = logging.getLogger(__name__)
+GENERAL_DEFAULT_MODEL = os.getenv("GENERAL_MODEL_NAME", "qwen2.5-coder:32b").strip() or "qwen2.5-coder:32b"
 
 class RegistryLoader:
     """Loads domains from DB into Runtime Registry."""
@@ -64,7 +66,7 @@ class RegistryLoader:
                     elif name == "general":
                         handler = GeneralDomainHandler(
                             model_selector=context["model_selector"],
-                            model_name=config.get("model", "qwen2.5-coder:32b"),
+                            model_name=config.get("model", GENERAL_DEFAULT_MODEL),
                             capability_catalog_provider=context.get("capability_catalog_provider"),
                         )
                 
@@ -79,12 +81,21 @@ class RegistryLoader:
                             caps = self.db.list_capabilities(name)
                     logger.info("Domain '%s' has %d capabilities in DB", name, len(caps))
                     for cap in caps:
-                        # Extract metadata from JSON string
-                        cap_metadata = json.loads(cap["metadata"]) if cap.get("metadata") else {}
-                        # Backwards compatibility: ensure schema is in metadata
-                        cap_metadata["schema"] = json.loads(cap["input_schema"]) if cap.get("input_schema") else {}
-                        cap_metadata.setdefault("domain", name)
-                        cap_metadata.setdefault("description", cap.get("description", ""))
+                        try:
+                            raw_metadata = json.loads(cap["metadata"]) if cap.get("metadata") else {}
+                        except Exception:
+                            raw_metadata = {}
+                        try:
+                            raw_schema = json.loads(cap["input_schema"]) if cap.get("input_schema") else {}
+                        except Exception:
+                            raw_schema = {}
+                        cap_metadata = self._normalize_capability_metadata(
+                            domain_name=name,
+                            capability_name=str(cap.get("capability", "")).strip(),
+                            description=str(cap.get("description", "")).strip(),
+                            schema=raw_schema if isinstance(raw_schema, dict) else {},
+                            metadata=raw_metadata if isinstance(raw_metadata, dict) else {},
+                        )
                         
                         self.registry.register_capability(
                             cap["capability"], 
@@ -103,7 +114,7 @@ class RegistryLoader:
         Domain-specific integrations must be injected via RegistryDB/bootstrapping.
         """
         logger.info("RegistryLoader: syncing core defaults...")
-        self.db.register_domain("general", "local", {"model": "qwen2.5-coder:32b"})
+        self.db.register_domain("general", "local", {"model": GENERAL_DEFAULT_MODEL})
         self.db.register_capability(
             domain_name="general",
             capability="chat",
@@ -201,12 +212,29 @@ class RegistryLoader:
             
             capabilities = manifest.get("capabilities", [])
             for cap in capabilities:
+                cap_name = str(cap.get("name") or cap.get("capability") or "").strip()
+                if not cap_name:
+                    logger.warning("Skipping manifest capability without name: %s", cap)
+                    continue
+                raw_schema = cap.get("schema")
+                if not isinstance(raw_schema, dict):
+                    raw_schema = {}
+                raw_metadata = cap.get("metadata")
+                if not isinstance(raw_metadata, dict):
+                    raw_metadata = {}
+                normalized_metadata = self._normalize_capability_metadata(
+                    domain_name=domain_name,
+                    capability_name=cap_name,
+                    description=str(cap.get("description", "")).strip(),
+                    schema=raw_schema,
+                    metadata=raw_metadata,
+                )
                 self.db.register_capability(
                     domain_name=domain_name,
-                    capability=cap["name"],
+                    capability=cap_name,
                     description=cap.get("description", ""),
-                    schema=cap.get("schema"),
-                    metadata=cap.get("metadata", {})
+                    schema=raw_schema,
+                    metadata=normalized_metadata,
                 )
             
             logger.info("Synced %d capabilities for domain %s (including metadata)", len(capabilities), domain_name)
@@ -215,3 +243,78 @@ class RegistryLoader:
         except Exception as e:
             logger.error("Failed to sync capabilities for %s: %s", domain_name, e)
             return False
+
+    def _normalize_capability_metadata(
+        self,
+        *,
+        domain_name: str,
+        capability_name: str,
+        description: str,
+        schema: dict[str, Any],
+        metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Normalize capability metadata to include a canonical method contract."""
+        normalized = dict(metadata or {})
+        normalized.setdefault("domain", domain_name)
+        normalized.setdefault("description", description)
+        normalized["schema"] = schema if isinstance(schema, dict) else {}
+
+        workflow = normalized.get("workflow")
+        if isinstance(workflow, str):
+            try:
+                workflow = json.loads(workflow)
+            except Exception:
+                workflow = None
+        if not isinstance(workflow, dict):
+            workflow = None
+
+        policy = normalized.get("policy")
+        if isinstance(policy, str):
+            try:
+                policy = json.loads(policy)
+            except Exception:
+                policy = {}
+        if not isinstance(policy, dict):
+            policy = {}
+        normalized["policy"] = policy
+
+        method_spec = normalized.get("method_spec")
+        if isinstance(method_spec, str):
+            try:
+                method_spec = json.loads(method_spec)
+            except Exception:
+                method_spec = None
+        if not isinstance(method_spec, dict):
+            method_spec = None
+
+        if method_spec is None and workflow is not None:
+            method_spec = {
+                "domain": domain_name,
+                "method": capability_name,
+                "version": str(normalized.get("version", "1.0.0")).strip() or "1.0.0",
+                "description": description,
+                "input_schema": schema,
+                "output_schema": normalized.get("output_schema", {})
+                if isinstance(normalized.get("output_schema"), dict)
+                else {},
+                "workflow": workflow,
+                "policy": policy,
+                "tags": normalized.get("tags", []) if isinstance(normalized.get("tags"), list) else [],
+                "metadata": normalized.get("contract_metadata", {})
+                if isinstance(normalized.get("contract_metadata"), dict)
+                else {},
+            }
+
+        if isinstance(method_spec, dict):
+            method_spec.setdefault("domain", domain_name)
+            method_spec.setdefault("method", capability_name)
+            method_spec.setdefault("description", description)
+            if not isinstance(method_spec.get("input_schema"), dict):
+                method_spec["input_schema"] = schema
+            if not isinstance(method_spec.get("policy"), dict):
+                method_spec["policy"] = policy
+            if not isinstance(method_spec.get("workflow"), dict) and workflow is not None:
+                method_spec["workflow"] = workflow
+            normalized["method_spec"] = method_spec
+
+        return normalized

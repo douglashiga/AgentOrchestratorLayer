@@ -35,8 +35,9 @@ from skills.registry import SkillRegistry
 from skills.implementations.mcp_adapter import MCPAdapter
 from memory.store import SQLiteMemoryStore
 from models.selector import ModelSelector
-from shared.models import EntryRequest
+from shared.models import EntryRequest, IntentOutput
 from shared.response_formatter import format_domain_output
+from shared.workflow_contracts import ClarificationAnswer
 
 # ─── Configuration ──────────────────────────────────────────────
 
@@ -103,12 +104,19 @@ def setup_logging() -> None:
 
 
 def preload_models() -> None:
-    """Warm up Ollama models so first query is fast."""
+    """Warm up local Ollama models so first query is fast."""
     import httpx
+    provider = os.getenv("MODEL_PROVIDER", "auto").strip().lower()
+    base_url = os.getenv("MODEL_BASE_URL", OLLAMA_URL).strip() or OLLAMA_URL
+    base_url_l = base_url.lower()
+    if provider in {"anthropic", "openai_compatible"}:
+        return
+    if provider == "auto" and ("anthropic.com" in base_url_l or "openai.com" in base_url_l):
+        return
     for model in (OLLAMA_INTENT_MODEL, OLLAMA_CHAT_MODEL):
         try:
             httpx.post(
-                f"{OLLAMA_URL}/api/chat",
+                f"{base_url.rstrip('/')}/api/chat",
                 json={"model": model, "messages": [], "keep_alive": "10m"},
                 timeout=30.0,
             )
@@ -571,9 +579,11 @@ async def run_telegram_loop() -> None:
     """Telegram polling loop using the same orchestration pipeline."""
     conversation: ConversationManager | None = None
     planner: PlannerService | None = None
+    engine: ExecutionEngine | None = None
     model_selector: ModelSelector | None = None
     mcp_adapter: MCPAdapter | None = None
     pending_confirmation_by_session: dict[str, Any] = {}
+    pending_workflow_by_session: dict[str, dict[str, str]] = {}
 
     if not TELEGRAM_BOT_TOKEN:
         console.print("[bold red]TELEGRAM_BOT_TOKEN is not configured.[/]")
@@ -636,6 +646,42 @@ async def run_telegram_loop() -> None:
                     )
                     history = conversation.get_history(entry_request.session_id)
                     pending_intent = pending_confirmation_by_session.get(entry_request.session_id)
+                    pending_workflow = pending_workflow_by_session.get(entry_request.session_id)
+
+                    if pending_workflow and pending_intent is None:
+                        answer_value = entry_request.input_text.strip()
+                        resume_answer = ClarificationAnswer(
+                            question_id=pending_workflow["question_id"],
+                            task_id=pending_workflow["task_id"],
+                            selected_option=answer_value,
+                            confirmed=not _is_no(answer_value),
+                        )
+                        output = await engine.resume_task(resume_answer)
+                        await _send_telegram_debug_json(
+                            telegram_entry,
+                            chat_id,
+                            "workflow_resumed",
+                            output.model_dump(mode="json"),
+                        )
+
+                        if output.status == "clarification":
+                            next_task_id = str(output.metadata.get("task_id", "")).strip()
+                            next_question_id = str(output.metadata.get("question_id", "")).strip()
+                            if next_task_id and next_question_id:
+                                pending_workflow_by_session[entry_request.session_id] = {
+                                    "task_id": next_task_id,
+                                    "question_id": next_question_id,
+                                }
+                            else:
+                                pending_workflow_by_session.pop(entry_request.session_id, None)
+                        else:
+                            pending_workflow_by_session.pop(entry_request.session_id, None)
+
+                        conversation.save(entry_request.session_id, "user", entry_request.input_text)
+                        response_text = format_domain_output(output, channel="telegram")
+                        conversation.save(entry_request.session_id, "assistant", response_text)
+                        await telegram_entry.send_message(chat_id, response_text)
+                        continue
 
                     if pending_intent is not None:
                         if _is_yes(entry_request.input_text):
@@ -729,6 +775,17 @@ async def run_telegram_loop() -> None:
                         output.model_dump(mode="json"),
                     )
 
+                    if output.status == "clarification":
+                        task_id = str(output.metadata.get("task_id", "")).strip()
+                        question_id = str(output.metadata.get("question_id", "")).strip()
+                        if task_id and question_id:
+                            pending_workflow_by_session[entry_request.session_id] = {
+                                "task_id": task_id,
+                                "question_id": question_id,
+                            }
+                    else:
+                        pending_workflow_by_session.pop(entry_request.session_id, None)
+
                     conversation.save(entry_request.session_id, "user", entry_request.input_text)
                     if output.status in ("success", "clarification"):
                         response_text = format_domain_output(output, channel="telegram")
@@ -751,6 +808,8 @@ async def run_telegram_loop() -> None:
     except KeyboardInterrupt:
         console.print("\n[dim]Telegram loop interrupted. Goodbye! 👋[/dim]")
     finally:
+        if engine:
+            engine.close()
         if conversation:
             conversation.close()
         if planner:
@@ -765,9 +824,11 @@ async def run_agent_loop() -> None:
     """Interactive Agent Loop."""
     conversation: ConversationManager | None = None
     planner: PlannerService | None = None
+    engine: ExecutionEngine | None = None
     model_selector: ModelSelector | None = None
     mcp_adapter: MCPAdapter | None = None
     pending_confirmation_intent = None
+    pending_workflow: dict[str, str] | None = None
 
     console.print(Panel(
         Text.from_markup(
@@ -821,6 +882,43 @@ async def run_agent_loop() -> None:
 
                 # Step 2: Conversation — get history
                 history = conversation.get_history(entry_request.session_id)
+
+                if pending_workflow is not None and pending_confirmation_intent is None:
+                    answer_text = entry_request.input_text.strip()
+                    resume_answer = ClarificationAnswer(
+                        question_id=pending_workflow["question_id"],
+                        task_id=pending_workflow["task_id"],
+                        selected_option=answer_text,
+                        confirmed=not _is_no(answer_text),
+                    )
+                    with console.status("[green]Resuming workflow...[/green]", spinner="dots"):
+                        output = await engine.resume_task(resume_answer)
+                    render_result(
+                        intent=IntentOutput(
+                            domain="workflow",
+                            capability="resume_task",
+                            confidence=1.0,
+                            parameters={},
+                            original_query=entry_request.input_text,
+                        ),
+                        output=output,
+                    )
+
+                    if output.status == "clarification":
+                        next_task_id = str(output.metadata.get("task_id", "")).strip()
+                        next_question_id = str(output.metadata.get("question_id", "")).strip()
+                        if next_task_id and next_question_id:
+                            pending_workflow = {"task_id": next_task_id, "question_id": next_question_id}
+                        else:
+                            pending_workflow = None
+                    else:
+                        pending_workflow = None
+
+                    conversation.save(entry_request.session_id, "user", entry_request.input_text)
+                    response_text = format_domain_output(output, channel="frontend")
+                    conversation.save(entry_request.session_id, "assistant", response_text)
+                    console.print()
+                    continue
 
                 # Handle one-shot confirmation flow first.
                 if pending_confirmation_intent is not None:
@@ -897,6 +995,16 @@ async def run_agent_loop() -> None:
                 # Step 9: Render output
                 render_result(intent, output)
 
+                if output.status == "clarification":
+                    task_id = str(output.metadata.get("task_id", "")).strip()
+                    question_id = str(output.metadata.get("question_id", "")).strip()
+                    if task_id and question_id:
+                        pending_workflow = {"task_id": task_id, "question_id": question_id}
+                    else:
+                        pending_workflow = None
+                else:
+                    pending_workflow = None
+
                 # Step 9: Persist conversation
                 conversation.save(entry_request.session_id, "user", entry_request.input_text)
                 if output.status in ("success", "clarification"):
@@ -914,6 +1022,8 @@ async def run_agent_loop() -> None:
                 console.print("\n[dim]Goodbye! 👋[/dim]")
                 break
     finally:
+        if engine:
+            engine.close()
         if conversation:
             conversation.close()
         if planner:

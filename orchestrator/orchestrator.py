@@ -36,11 +36,17 @@ class Orchestrator:
                 os.getenv("SOFT_CONFIRM_THRESHOLD", "0.94"),
             )
         )
+        clarification_timeout_seconds = float(os.getenv("ORCHESTRATOR_CLARIFICATION_TIMEOUT_SECONDS", "12"))
+        clarification_max_retries = int(os.getenv("ORCHESTRATOR_CLARIFICATION_MAX_RETRIES", "1"))
+        clarification_model_name = os.getenv(
+            "ORCHESTRATOR_CLARIFICATION_MODEL",
+            os.getenv("INTENT_MODEL_NAME", os.getenv("OLLAMA_INTENT_MODEL", "llama3.1:8b")),
+        ).strip() or "llama3.1:8b"
         self.clarification_policy = ModelPolicy(
-            model_name="llama3.1:8b",
+            model_name=clarification_model_name,
             temperature=0.7,
-            timeout_seconds=5.0,
-            max_retries=1,
+            timeout_seconds=max(1.0, clarification_timeout_seconds),
+            max_retries=max(1, clarification_max_retries),
             json_mode=False
         )
 

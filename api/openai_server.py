@@ -56,6 +56,13 @@ GENERAL_FASTPATH_ENABLED = os.getenv("GENERAL_FASTPATH_ENABLED", "false").strip(
 )
 MODEL_ID_DEFAULT = "agent-orchestrator"
 MODEL_ID_FASTPATH = "agent-orchestrator-fastpath"
+OPENAI_API_PRELOAD_MODELS = os.getenv("OPENAI_API_PRELOAD_MODELS", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+OPENAI_API_PRELOAD_TIMEOUT_SECONDS = float(os.getenv("OPENAI_API_PRELOAD_TIMEOUT_SECONDS", "40"))
 _TICKER_PATTERN = re.compile(r"\b[A-Z]{4}(?:3|4|5|6|11)(?:F)?(?:\.[A-Z]{1,4})?\b")
 _SYMBOL_SUFFIX_PATTERN = re.compile(r"\b[A-Z0-9-]{1,12}\.(?:SA|ST|US|L)\b")
 _GENERAL_CHAT_HINTS = (
@@ -125,6 +132,39 @@ _ACTION_MARKERS = (
     "buscar",
     "quero saber",
 )
+
+
+def _models_to_preload() -> list[str]:
+    names = [
+        os.getenv("OLLAMA_INTENT_MODEL", "llama3.1:8b").strip(),
+        os.getenv("OLLAMA_CHAT_MODEL", os.getenv("OLLAMA_INTENT_MODEL", "llama3.1:8b")).strip(),
+    ]
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for model_name in names:
+        if not model_name or model_name in seen:
+            continue
+        seen.add(model_name)
+        ordered.append(model_name)
+    return ordered
+
+
+def _preload_models_sync(base_url: str, provider: str = "ollama") -> None:
+    if not OPENAI_API_PRELOAD_MODELS:
+        return
+    if provider != "ollama":
+        return
+    base_url = base_url.rstrip("/")
+    for model_name in _models_to_preload():
+        try:
+            httpx.post(
+                f"{base_url}/api/chat",
+                json={"model": model_name, "messages": [], "keep_alive": "15m"},
+                timeout=OPENAI_API_PRELOAD_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            # Keep startup resilient even if warmup fails.
+            continue
 
 
 class ChatMessage(BaseModel):
@@ -634,6 +674,10 @@ async def lifespan(_app: FastAPI):
         model_selector,
         mcp_adapter,
     ) = build_pipeline()
+    _preload_models_sync(
+        base_url=str(getattr(model_selector, "ollama_url", os.getenv("OLLAMA_URL", "http://host.docker.internal:11434"))),
+        provider=str(getattr(model_selector, "provider", "ollama")),
+    )
     _app.state.conversation = conversation
     _app.state.intent_adapter = intent_adapter
     _app.state.planner = planner
@@ -699,7 +743,9 @@ async def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
     history = conversation.get_history(session_id)
     fastpath_requested = _resolve_fastpath_requested(request)
     fastpath_candidate, fastpath_reason = _general_fastpath_candidate(user_text, history)
-    use_fastpath = fastpath_requested and fastpath_candidate
+    model_provider = str(getattr(app.state.model_selector, "provider", "ollama")).strip().lower()
+    stream_fastpath_supported = model_provider == "ollama"
+    use_fastpath = fastpath_requested and fastpath_candidate and (not request.stream or stream_fastpath_supported)
 
     if request.stream:
         async def event_stream():
