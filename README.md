@@ -16,14 +16,14 @@ graph TD
     Entry --> Intent[Intent Adapter]
     Intent --> Planner[Planner Service]
     Mem[(Memory Store)] --> Planner
-    Planner --> Decomposer[TaskDecomposer\n(metadata-driven)]
-    Planner --> FCPlanner[FunctionCallingPlanner\n(optional)]
-    Decomposer --> Exec[Execution Engine\n(DAG/parallel)]
+    Planner --> Decomposer["TaskDecomposer (metadata-driven)"]
+    Planner --> FCPlanner["FunctionCallingPlanner (optional)"]
+    Decomposer --> Exec["Execution Engine (DAG/parallel)"]
     FCPlanner --> Exec
     Exec --> Orch[Orchestrator]
     Orch --> Reg[Registry]
-    Reg --> Fin[Finance Domain\n(remote_http)]
-    Reg --> Com[Communication Domain\n(remote_http)]
+    Reg --> Fin["Finance Domain (remote_http)"]
+    Reg --> Com["Communication Domain (remote_http)"]
 ```
 
 ## DDD Layer Mapping (Analogy)
