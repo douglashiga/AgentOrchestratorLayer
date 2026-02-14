@@ -6,7 +6,7 @@ services:
       - MCP_URL=${MCP_URL:-http://host.docker.internal:8000/sse}
       - PYTHONPATH=/app
     ports:
-      - "8001:8001"
+      - "8003:8001"
     volumes:
       - ./registry.db:/app/registry.db
     command: python domains/finance/server.py
