@@ -170,9 +170,28 @@ docker-compose up --build
 ```
 
 This starts:
-- `finance-server` on `:8001`
+- `finance-server` on `:8003` (container internal `:8001`)
 - `communication-domain` on `:8002`
 - `agent`
+- `open-webui` on `:3000`
+
+### Open WebUI
+
+Open WebUI is included in Docker Compose and can be used as a debugging console.
+
+Access:
+- `http://localhost:3000`
+
+Default connection envs in compose:
+- `OPENAI_API_BASE_URL` (default: `http://host.docker.internal:8000/v1`)
+- `OPENAI_API_KEY` (default: `sk-local-dev`)
+
+If your OpenAI-compatible endpoint runs at a different URL, set it in `.env`:
+
+```env
+OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1
+OPENAI_API_KEY=sk-local-dev
+```
 
 ### Entry channels
 

@@ -50,5 +50,22 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    environment:
+      - WEBUI_AUTH=False
+      - OPENAI_API_BASE_URL=${OPENAI_API_BASE_URL:-http://host.docker.internal:8000/v1}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-sk-local-dev}
+    ports:
+      - "3000:8080"
+    volumes:
+      - open-webui-data:/app/backend/data
+    depends_on:
+      - agent
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
 volumes:
   db-data:
+  open-webui-data:
