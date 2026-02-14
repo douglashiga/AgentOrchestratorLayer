@@ -26,6 +26,49 @@ graph TD
     Reg --> Com[Communication Domain\n(remote_http)]
 ```
 
+## DDD Layer Mapping (Analogy)
+
+This project can be understood with a DDD-style layering:
+
+- `Presentation Layer` (how requests enter/leave the system)
+  - `entry/cli.py` (CLI channel)
+  - `entry/telegram.py` (Telegram channel)
+  - `api/openai_server.py` (OpenAI-compatible HTTP API for Open WebUI)
+  - Responsibility: receive input, expose output/streaming, keep transport concerns out of business rules.
+
+- `Application Layer` (orchestration/use-case flow)
+  - `conversation/manager.py`
+  - `intent/adapter.py`
+  - `planner/service.py`
+  - `planner/task_decomposer.py`
+  - `planner/function_calling_planner.py`
+  - `execution/engine.py`
+  - `execution/result_combiner.py`
+  - `orchestrator/orchestrator.py`
+  - Responsibility: execute use-cases end-to-end (intent -> plan -> execute -> combine), without embedding low-level infra details.
+
+- `Domain Layer` (business behavior/rules)
+  - `domains/finance/*`
+  - `domains/general/handler.py`
+  - `shared/models.py` (core contracts/entities for intent/plan/output)
+  - Responsibility: business decisions, validation semantics, deterministic finance/general behavior.
+
+- `Infrastructure Layer` (integration/persistence/adapters)
+  - `models/selector.py` (LLM/Ollama/OpenAI-compatible client calls)
+  - `memory/store.py` (SQLite memory persistence)
+  - `registry/db.py`, `registry/loader.py`, `registry/http_handler.py`, `registry/domain_registry.py`
+  - `skills/*`, `skills/implementations/mcp_adapter.py`
+  - Responsibility: HTTP, DB, external tools, manifests, and all concrete IO integrations.
+
+### Where Agent-Orchestration Components Fit
+
+- `Intent Adapter` -> Application Layer (translates free text into structured intent).
+- `Planner Service` + `TaskDecomposer` + `FunctionCallingPlanner` -> Application Layer (builds executable plan).
+- `Execution Engine` -> Application Layer (runs DAG/sequential steps, dependency control).
+- `Orchestrator` -> Application Layer (routes capability/domain and applies confidence gate).
+- `Domain Handlers` (finance/general) -> Domain Layer (business logic for each bounded context).
+- `Registry + HTTP handlers + ModelSelector + MCP adapter` -> Infrastructure Layer (runtime wiring and external integrations).
+
 ## Key Features
 
 - Dynamic domains from DB/bootstrap (no hardcoded finance/communication in orchestrator runtime).
@@ -39,6 +82,32 @@ graph TD
 - Telegram entry channel with per-step JSON debug trace.
 - OpenAI-compatible API for Open WebUI.
 - Streaming support (`stream=true`) with incremental status updates for better UX.
+- Optional general-chat fast-path with real token streaming.
+
+## Generic Engine Contracts
+
+The project now includes generic, domain-agnostic workflow contracts in:
+
+- `shared/workflow_contracts.py`
+
+Core contracts:
+
+- `MethodSpec`: declares a capability method with `input_schema`, `output_schema`, `workflow`, and `policy`.
+- `WorkflowSpec`: declarative graph (`nodes` + `edges`) with validation (unique ids, valid references, DAG no-cycle).
+- `WorkflowNodeSpec`: reusable node types (`transform`, `validate`, `resolve`, `decision`, `human_gate`, `call`, `aggregate`, `return`).
+- `MethodPolicy` / `HumanValidationPolicy`: dynamic gate rules (ambiguity, invalid input, confidence threshold).
+- `TaskInstance`: persisted runtime state for pause/resume.
+- `WorkflowEvent`: canonical event envelope (`task_created`, `clarification_required`, `task_resumed`, etc.).
+
+Runtime support:
+
+- `ExecutionEngine.execute_method(intent, method_spec, ...)` executes declarative workflows.
+- `ExecutionEngine.resume_task(answer)` resumes tasks paused by `human_gate` nodes.
+- `execution/task_state_store.py` persists task snapshots and workflow events in SQLite.
+- Declarative runtime supports DAG batching with parallel execution (`max_concurrency`).
+- Retry/backoff/idempotency are applied from `MethodPolicy` / node-level retry policy.
+- Condition expressions are evaluated by `shared/safe_eval.py` (no raw `eval`).
+- OpenAI API/WebUI flow now supports workflow pause/resume per `session_id`.
 
 ## Memory Store (Semantic-Kernel style)
 
@@ -214,10 +283,11 @@ Example `PLANNER_MEMORY_PARAM_MAP_JSON`:
 
 ### OpenAI-Compatible API / Open WebUI
 
-- `OPENAI_API_DEBUG_TRACE` (default `true`)
+- `OPENAI_API_DEBUG_TRACE` (default `false`)
 - `OPENAI_API_INCLUDE_SUGGESTIONS` (default `true`)
 - `OPENAI_API_STREAM_STATUS_UPDATES` (default `true`)
 - `OPENAI_API_STREAM_CHUNK_SIZE` (default `160`)
+- `GENERAL_FASTPATH_ENABLED` (default `false`)
 - `OPENAI_API_BASE_URL` (for Open WebUI)
 - `OPENAI_API_KEY` (for Open WebUI)
 
@@ -292,7 +362,19 @@ Endpoints:
 
 Streaming:
 - Send `"stream": true` to receive SSE chunks (`chat.completion.chunk`).
-- The API emits early status messages before final content to improve perceived latency.
+- Normal mode emits early status messages before final content to improve perceived latency.
+- Fast-path mode streams model tokens in real-time for clear general-chat messages.
+
+Model options in Open WebUI:
+- `agent-orchestrator` -> full pipeline (`intent -> planner -> engine -> domain`).
+- `agent-orchestrator-fastpath` -> enables a conservative fast-path for general chat. If the message looks finance/task-oriented, it automatically falls back to full pipeline.
+
+Optional request flag:
+- `x_general_fastpath: true|false` in `/v1/chat/completions` can force on/off behavior per request.
+
+History persistence behavior:
+- Assistant responses are persisted in a clean form (without debug/suggestions blocks) to keep future context smaller and faster.
+- UI response can still include debug and suggestion metadata (`x_openwebui`).
 
 ## Admin Commands
 

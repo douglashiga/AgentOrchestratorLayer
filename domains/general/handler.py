@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 class GeneralDomainHandler:
     """Handles general conversation using Ollama LLM via Model Layer."""
 
+    SYSTEM_PROMPT = (
+        "You are a friendly financial assistant. "
+        "You can help users with stock market questions, financial data, and general conversation. "
+        "Be concise, helpful, and friendly. "
+        "If the user greets you, greet them back and briefly explain what you can do. "
+        "Respond in the same language the user uses."
+    )
+
     def __init__(
         self,
         model_selector: ModelSelector,
@@ -106,19 +114,7 @@ class GeneralDomainHandler:
 
     def _generate_response(self, user_message: str) -> str:
         """Call Model Selector."""
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a friendly financial assistant. "
-                    "You can help users with stock market questions, financial data, and general conversation. "
-                    "Be concise, helpful, and friendly. "
-                    "If the user greets you, greet them back and briefly explain what you can do. "
-                    "Respond in the same language the user uses."
-                ),
-            },
-            {"role": "user", "content": user_message},
-        ]
+        messages = self.build_chat_messages(user_message)
         
         # Determine strict output type (str)
         response = self.model_selector.generate(
@@ -131,3 +127,13 @@ class GeneralDomainHandler:
         else:
             # Should not happen as json_mode=False
             return str(response)
+
+    def build_chat_messages(self, user_message: str) -> list[dict[str, str]]:
+        """Expose the exact conversational prompt/messages used by this handler."""
+        return [
+            {
+                "role": "system",
+                "content": self.SYSTEM_PROMPT,
+            },
+            {"role": "user", "content": user_message},
+        ]
