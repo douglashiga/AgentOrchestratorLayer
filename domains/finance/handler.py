@@ -61,8 +61,19 @@ class FinanceDomainHandler:
                         input_model = type_hints.get("params")
                         
                         if input_model:
+                            # Run metadata-driven pre-flow before strict model validation
+                            # so we can infer/resolve missing required fields (e.g. symbol).
+                            metadata = self._get_capability_metadata(method_name)
+                            pre_flow_params = self._apply_pre_flow(
+                                capability=method_name,
+                                params=resolved_params,
+                                metadata=metadata,
+                                original_query=intent.original_query,
+                            )
+                            if isinstance(pre_flow_params, DomainOutput):
+                                return pre_flow_params
                             # Validate inputs against schema
-                            validated_params = input_model(**resolved_params)
+                            validated_params = input_model(**pre_flow_params)
                             # Call specific method with Intent AND Validated Params
                             return await method(intent, validated_params)
                     except ValidationError as ve:
@@ -442,9 +453,12 @@ class FinanceDomainHandler:
         if raw_value in (None, ""):
             inferred = self._infer_symbol_from_query_text(original_query)
             if inferred:
+                resolved_symbol = self._resolve_symbol_value(str(inferred), step=step)
+                if isinstance(resolved_symbol, DomainOutput):
+                    return resolved_symbol
                 updated = dict(params)
-                updated[field] = inferred
-                logger.info("Inferred symbol from query text: %s", inferred)
+                updated[field] = resolved_symbol
+                logger.info("Inferred symbol from query text: %s -> %s", inferred, resolved_symbol)
                 return updated
             if step.get("required") is True:
                 return DomainOutput(
@@ -493,6 +507,37 @@ class FinanceDomainHandler:
             normalized = self._normalize_canonical_symbol(compact)
             if normalized:
                 return normalized
+
+        # Fallback for company-like plain tokens (e.g. "petro", "vale").
+        # Prefer tokens after prepositions used in natural requests:
+        # "valor da PETRO", "preco de VALE".
+        contextual_tokens = re.findall(r"\b(?:DA|DE|DO)\s+([A-Z]{4,10})\b", text)
+        plain_tokens = contextual_tokens or re.findall(r"\b([A-Z]{4,8})\b", text)
+        stopwords = {
+            "QUAL",
+            "VALOR",
+            "PRECO",
+            "PREÇO",
+            "COTACAO",
+            "COTAÇÃO",
+            "PEGUE",
+            "MANDE",
+            "ENVIE",
+            "TELEGRAM",
+            "HOJE",
+            "DIGA",
+            "MANDA",
+            "ENVIA",
+            "ENVIAR",
+            "PEGUE",
+            "PEGA",
+            "ME",
+            "NO",
+        }
+        for token in plain_tokens:
+            if token in stopwords:
+                continue
+            return token
 
         return None
 
@@ -650,7 +695,7 @@ class FinanceDomainHandler:
         """
         raw_items: list[dict[str, Any]] = []
         if isinstance(payload, dict):
-            for key in ("results", "symbols", "matches", "items", "data"):
+            for key in ("results", "symbols", "matches", "items", "quotes", "data"):
                 value = payload.get(key)
                 if isinstance(value, list):
                     raw_items = value

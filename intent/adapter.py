@@ -85,14 +85,15 @@ class IntentAdapter:
             logger.error("Intent extraction failed: %s", e)
             deterministic = self._deterministic_fallback(input_text)
             if deterministic:
-                return deterministic
-            return IntentOutput(
+                return self._enrich_intent_from_query(deterministic, input_text)
+            fallback_intent = IntentOutput(
                 domain="general",
                 capability="chat",
                 confidence=0.0,
                 parameters={"message": input_text},
                 original_query=input_text
             )
+            return self._enrich_intent_from_query(fallback_intent, input_text)
 
     def _deterministic_fallback(self, input_text: str) -> IntentOutput | None:
         """
@@ -132,7 +133,40 @@ class IntentAdapter:
             deterministic = self._deterministic_fallback(input_text)
             if deterministic:
                 return deterministic
-        return intent
+        return self._enrich_intent_from_query(intent, input_text)
+
+    def _enrich_intent_from_query(self, intent: IntentOutput, input_text: str) -> IntentOutput:
+        """
+        Deterministically enrich intent with cross-domain execution hints inferred
+        from the user sentence (e.g. notify/send/share after primary action).
+        """
+        params = dict(intent.parameters or {})
+        notify_detected = self._infer_notify_from_text(input_text)
+        if notify_detected:
+            params["notify"] = True
+            # For explicit send/share requests, avoid unnecessary soft confirmation.
+            if intent.domain != "general":
+                return intent.model_copy(update={"parameters": params, "confidence": max(intent.confidence, 0.95)})
+        return intent.model_copy(update={"parameters": params})
+
+    def _infer_notify_from_text(self, input_text: str) -> bool:
+        text = (input_text or "").strip().lower()
+        if not text:
+            return False
+
+        send_keywords = (
+            "envie",
+            "enviar",
+            "manda",
+            "mandar",
+            "notifique",
+            "notificar",
+            "me avise",
+            "compartilhe",
+            "compartilhar",
+            "telegram",
+        )
+        return any(token in text for token in send_keywords)
 
     def _has_capability(self, domain: str, capability: str) -> bool:
         if self.capability_catalog:

@@ -73,6 +73,44 @@ def test_infer_symbol_from_query_text_b3_base():
     assert inferred == "PETR4.SA"
 
 
+def test_infer_symbol_from_query_text_plain_company_token():
+    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None)
+    inferred = handler._infer_symbol_from_query_text("me diga o valor da petro e manda no telegram")
+    assert inferred == "PETRO"
+
+
+def test_pre_flow_resolves_inferred_plain_token_via_search():
+    gateway = DummyGatewayByAction(
+        {
+            "yahoo_search": {
+                "success": True,
+                "data": {
+                    "quotes": [
+                        {"symbol": "PETR4.SA", "shortname": "Petrobras PN"},
+                    ]
+                },
+            }
+        }
+    )
+    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None)
+    metadata = {
+        "schema": {
+            "type": "object",
+            "properties": {"symbol": {"type": "string"}},
+            "required": ["symbol"],
+        },
+        "flow": {"pre": [{"type": "resolve_symbol", "param": "symbol", "required": True}]},
+    }
+    out = handler._apply_pre_flow(
+        capability="get_stock_price",
+        params={},
+        metadata=metadata,
+        original_query="me diga o valor da petro e envia no telegram",
+    )
+    assert isinstance(out, dict)
+    assert out.get("symbol") == "PETR4.SA"
+
+
 def test_get_flow_steps_marks_required_from_schema_even_for_explicit_flow():
     handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None)
     metadata = {

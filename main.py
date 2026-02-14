@@ -213,6 +213,25 @@ def _extract_message_candidate(query: str) -> str | None:
     return None
 
 
+def _looks_like_notify_request(query: str) -> bool:
+    text = (query or "").strip().lower()
+    if not text:
+        return False
+    keywords = (
+        "telegram",
+        "envie",
+        "enviar",
+        "manda",
+        "mandar",
+        "notifique",
+        "notificar",
+        "me avise",
+        "compartilhe",
+        "compartilhar",
+    )
+    return any(token in text for token in keywords)
+
+
 def _normalize_intent_parameters(intent, registry, entry_request: EntryRequest | None = None):
     """Normalize alias params and apply metadata defaults before planning/execution."""
     params = dict(intent.parameters or {})
@@ -228,6 +247,10 @@ def _normalize_intent_parameters(intent, registry, entry_request: EntryRequest |
     for alias, canonical in alias_map.items():
         if alias in params and canonical not in params:
             params[canonical] = params[alias]
+
+    if capability not in ("send_telegram_message", "send_telegram_group_message"):
+        if params.get("notify") is not True and _looks_like_notify_request(intent.original_query):
+            params["notify"] = True
 
     # Communication fixes: message inference + chat_id normalization.
     if capability in ("send_telegram_message", "send_telegram_group_message"):
@@ -272,13 +295,19 @@ def _normalize_intent_parameters(intent, registry, entry_request: EntryRequest |
             if param_name not in params or params[param_name] in (None, ""):
                 params[param_name] = value
 
-    return intent.model_copy(update={"parameters": params})
+    confidence = float(intent.confidence)
+    if params.get("notify") is True and intent.domain != "general":
+        confidence = max(confidence, 0.95)
+
+    return intent.model_copy(update={"parameters": params, "confidence": confidence})
 
 
 def _should_soft_confirm(intent) -> bool:
     if not SOFT_CONFIRMATION_ENABLED:
         return False
     if intent.domain == "general":
+        return False
+    if (intent.parameters or {}).get("notify") is True:
         return False
     return intent.confidence < SOFT_CONFIRM_THRESHOLD
 
