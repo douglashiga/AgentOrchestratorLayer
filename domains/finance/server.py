@@ -178,12 +178,25 @@ def get_manifest():
         
         # 2. Merge with Metadata Overrides
         overrides = METADATA_OVERRIDES.get(name, {})
+        merged_metadata = dict(overrides)
+        merged_metadata.setdefault(
+            "composition",
+            {
+                "followup_roles": ["notifier"],
+                "enabled_if": {
+                    "path": "parameters.notify",
+                    "equals": True,
+                },
+                "followup_required": False,
+                "followup_output_key": "notification",
+            },
+        )
         
         capabilities.append({
             "name": name,
             "description": tool["description"],
             "schema": tool["schema"], # Raw JSON Schema from MCP
-            "metadata": overrides
+            "metadata": merged_metadata
         })
 
     return {

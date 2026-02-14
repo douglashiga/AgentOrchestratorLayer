@@ -46,6 +46,20 @@ def manifest() -> dict[str, Any]:
                 "metadata": {
                     "requires_auth": True,
                     "channel": "telegram",
+                    "composition": {
+                        "role": "notifier",
+                        "priority": 100,
+                        "param_map": {
+                            "chat_id": {
+                                "from_parameters": ["chat_id", "group_id"],
+                                "default": "${ENV:TELEGRAM_DEFAULT_CHAT_ID}",
+                            },
+                            "message": {
+                                "from_parameters": ["message", "notify_message"],
+                                "default": "${1.explanation}",
+                            },
+                        },
+                    },
                 },
             },
             {
@@ -64,6 +78,20 @@ def manifest() -> dict[str, Any]:
                 "metadata": {
                     "requires_auth": True,
                     "channel": "telegram",
+                    "composition": {
+                        "role": "notifier",
+                        "priority": 90,
+                        "param_map": {
+                            "group_id": {
+                                "from_parameters": ["group_id", "chat_id"],
+                                "default": "${ENV:TELEGRAM_DEFAULT_CHAT_ID}",
+                            },
+                            "message": {
+                                "from_parameters": ["message", "notify_message"],
+                                "default": "${1.explanation}",
+                            },
+                        },
+                    },
                 },
             },
         ],

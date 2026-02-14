@@ -35,6 +35,7 @@ services:
       - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
       - REGISTRY_DB_PATH=/app/registry.db
       - DB_PATH=/app/agent.db
+      - MEMORY_DB_PATH=/app/memory.db
       - MCP_URL=${MCP_URL:-http://host.docker.internal:8000/sse}
       - BOOTSTRAP_DOMAINS_FILE=/app/domains.bootstrap.json
       - AUTO_SYNC_REMOTE_CAPABILITIES=true
@@ -57,6 +58,7 @@ services:
       - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
       - REGISTRY_DB_PATH=/app/registry.db
       - DB_PATH=/app/agent.db
+      - MEMORY_DB_PATH=/app/memory.db
       - MCP_URL=${MCP_URL:-http://host.docker.internal:8000/sse}
       - BOOTSTRAP_DOMAINS_FILE=/app/domains.bootstrap.json
       - AUTO_SYNC_REMOTE_CAPABILITIES=true

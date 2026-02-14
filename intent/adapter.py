@@ -142,7 +142,8 @@ Rules:
 1. Use only domains/actions listed above.
 {discovery_rule}4. If confidence is not high, return confidence <= 0.90.
 5. If the user answer is a short follow-up to an assistant question, infer the intended domain/action from chat history.
-6. Return ONLY the JSON object.
+6. If the user asks to deliver/send/notify the result after executing an action, keep the primary action and set parameters.notify = true.
+7. Return ONLY the JSON object.
 """
 
         return f"""You are an intent extraction engine. Your ONLY job is to analyze the user's message and return a structured JSON object.
@@ -190,7 +191,8 @@ Rules:
      -> Domain: "finance", Action: "get_top_gainers" (inferred from context), Parameters: {{"market": "BR"}}
      -> DO NOT return "chat" domain for "BR" if it answers a finance question.
 
-6. NEVER add explanations. Return ONLY the JSON object.
+6. If the user asks to send/notify the output after running an action, keep the primary finance action and include parameters.notify = true.
+7. NEVER add explanations. Return ONLY the JSON object.
 """
 
     def _build_messages(self, input_text: str, history: list[dict] | None = None) -> list[dict]:

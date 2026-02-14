@@ -33,6 +33,7 @@ from registry.loader import RegistryLoader
 from skills.gateway import SkillGateway
 from skills.registry import SkillRegistry
 from skills.implementations.mcp_adapter import MCPAdapter
+from memory.store import SQLiteMemoryStore
 from models.selector import ModelSelector
 from shared.models import EntryRequest
 
@@ -46,6 +47,8 @@ OLLAMA_CHAT_MODEL = "qwen2.5-coder:32b"
 MCP_URL = os.getenv("MCP_URL", "http://localhost:8000/sse")
 DB_PATH = os.getenv("DB_PATH", "agent.db")
 REGISTRY_DB_PATH = os.getenv("REGISTRY_DB_PATH", "registry.db")
+MEMORY_DB_PATH = os.getenv("MEMORY_DB_PATH", "memory.db")
+MEMORY_BOOTSTRAP_JSON = os.getenv("MEMORY_BOOTSTRAP_JSON", "").strip()
 LOG_LEVEL = logging.INFO
 BOOTSTRAP_DOMAINS_JSON = os.getenv("BOOTSTRAP_DOMAINS_JSON", "").strip()
 BOOTSTRAP_DOMAINS_FILE = os.getenv("BOOTSTRAP_DOMAINS_FILE", "").strip()
@@ -67,7 +70,7 @@ SOFT_CONFIRMATION_ENABLED = os.getenv("SOFT_CONFIRMATION_ENABLED", "true").strip
     "yes",
     "on",
 )
-SOFT_CONFIRM_THRESHOLD = float(os.getenv("SOFT_CONFIRM_THRESHOLD", "0.96"))
+SOFT_CONFIRM_THRESHOLD = float(os.getenv("SOFT_CONFIRM_THRESHOLD", "0.94"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_ENTRY_POLL_TIMEOUT_SECONDS = int(os.getenv("TELEGRAM_ENTRY_POLL_TIMEOUT_SECONDS", "20"))
 TELEGRAM_ENTRY_REQUEST_TIMEOUT_SECONDS = float(os.getenv("TELEGRAM_ENTRY_REQUEST_TIMEOUT_SECONDS", "35"))
@@ -143,6 +146,44 @@ def _load_bootstrap_domains() -> list[dict]:
             logger.warning("Failed to parse BOOTSTRAP_DOMAINS_FILE '%s': %s", path, e)
 
     return []
+
+
+def _bootstrap_memory(memory_store: SQLiteMemoryStore) -> None:
+    """
+    Seed memory store from env JSON.
+
+    Accepted formats:
+    - {"preferred_market":"SE","risk_mode":"moderate"}
+    - {"global":{"preferred_market":"SE"},"session:abc":{"risk_mode":"high"}}
+    """
+    if not MEMORY_BOOTSTRAP_JSON:
+        return
+
+    try:
+        payload = json.loads(MEMORY_BOOTSTRAP_JSON)
+    except json.JSONDecodeError as e:
+        logger.warning("Invalid MEMORY_BOOTSTRAP_JSON: %s", e)
+        return
+
+    if not isinstance(payload, dict):
+        logger.warning("MEMORY_BOOTSTRAP_JSON must be a JSON object.")
+        return
+
+    direct_global = all(not isinstance(v, dict) for v in payload.values())
+    if direct_global:
+        for key, value in payload.items():
+            memory_store.save(str(key), value, namespace="global")
+        logger.info("Bootstrapped %d memory entries in global namespace", len(payload))
+        return
+
+    total = 0
+    for namespace, values in payload.items():
+        if not isinstance(values, dict):
+            continue
+        for key, value in values.items():
+            memory_store.save(str(key), value, namespace=str(namespace))
+            total += 1
+    logger.info("Bootstrapped %d memory entries across namespaces", total)
 
 
 def _is_yes(text: str) -> bool:
@@ -322,6 +363,8 @@ def build_pipeline() -> tuple[
     """Wire all layers together using Dynamic Registry."""
     # Shared
     model_selector = ModelSelector(ollama_url=OLLAMA_URL)
+    memory_store = SQLiteMemoryStore(db_path=MEMORY_DB_PATH)
+    _bootstrap_memory(memory_store)
 
     # Skills (still needed for local domains)
     mcp_adapter = MCPAdapter(mcp_url=MCP_URL)
@@ -369,7 +412,11 @@ def build_pipeline() -> tuple[
         capability_catalog=capability_catalog,
     )
     
-    planner_service = PlannerService(known_capabilities=registered_capabilities)
+    planner_service = PlannerService(
+        capability_catalog=capability_catalog,
+        model_selector=model_selector,
+        memory_store=memory_store,
+    )
     execution_engine = ExecutionEngine(orchestrator=orchestrator)
     conversation_manager = ConversationManager(db_path=DB_PATH)
     cli_adapter = CLIAdapter()
@@ -493,6 +540,7 @@ def render_intent_debug(intent) -> None:
 async def run_telegram_loop() -> None:
     """Telegram polling loop using the same orchestration pipeline."""
     conversation: ConversationManager | None = None
+    planner: PlannerService | None = None
     model_selector: ModelSelector | None = None
     mcp_adapter: MCPAdapter | None = None
     pending_confirmation_by_session: dict[str, Any] = {}
@@ -633,12 +681,15 @@ async def run_telegram_loop() -> None:
                             await telegram_entry.send_message(chat_id, question)
                             continue
 
-                    plan = planner.generate_plan(intent)
+                    plan = planner.generate_plan(intent, session_id=entry_request.session_id)
                     await _send_telegram_debug_json(
                         telegram_entry,
                         chat_id,
                         "execution_plan",
-                        plan.model_dump(mode="json"),
+                        {
+                            "plan": plan.model_dump(mode="json"),
+                            "memory_context": getattr(planner, "last_memory_context", {}),
+                        },
                     )
                     output = await engine.execute_plan(plan, original_intent=intent)
                     await _send_telegram_debug_json(
@@ -672,6 +723,8 @@ async def run_telegram_loop() -> None:
     finally:
         if conversation:
             conversation.close()
+        if planner:
+            planner.close()
         if model_selector:
             model_selector.close()
         if mcp_adapter:
@@ -681,6 +734,7 @@ async def run_telegram_loop() -> None:
 async def run_agent_loop() -> None:
     """Interactive Agent Loop."""
     conversation: ConversationManager | None = None
+    planner: PlannerService | None = None
     model_selector: ModelSelector | None = None
     mcp_adapter: MCPAdapter | None = None
     pending_confirmation_intent = None
@@ -802,7 +856,7 @@ async def run_agent_loop() -> None:
 
                 # Step 4: Planner (Decomposition)
                 with console.status("[blue]Planning...[/blue]", spinner="dots"):
-                    plan = planner.generate_plan(intent)
+                    plan = planner.generate_plan(intent, session_id=entry_request.session_id)
                     logger.info("Plan generated: %d steps", len(plan.steps))
 
                 # Step 5-8: Execution Engine (Orchestrator + Domain + Model)
@@ -832,6 +886,8 @@ async def run_agent_loop() -> None:
     finally:
         if conversation:
             conversation.close()
+        if planner:
+            planner.close()
         if model_selector:
             model_selector.close()
         if mcp_adapter:
@@ -879,6 +935,63 @@ def admin_sync_domain(name):
         console.print(f"[bold red]Failed to sync capabilities for:[/] {name}")
 
 
+def _parse_json_or_text(raw_value: str) -> Any:
+    value = raw_value.strip()
+    if not value:
+        return value
+    try:
+        return json.loads(value)
+    except Exception:
+        return value
+
+
+def admin_memory_set(key: str, value: str, namespace: str = "global") -> None:
+    store = SQLiteMemoryStore(db_path=MEMORY_DB_PATH)
+    try:
+        parsed = _parse_json_or_text(value)
+        store.save(key, parsed, namespace=namespace)
+        console.print(f"[bold green]Memory saved:[/] {namespace}/{key} = {json.dumps(parsed, ensure_ascii=False)}")
+    finally:
+        store.close()
+
+
+def admin_memory_get(key: str, namespace: str = "global") -> None:
+    store = SQLiteMemoryStore(db_path=MEMORY_DB_PATH)
+    try:
+        value = store.get(key, namespace=namespace)
+        if value is None:
+            console.print(f"[bold yellow]Not found:[/] {namespace}/{key}")
+            return
+        console.print(f"[bold cyan]{namespace}/{key}[/]: {json.dumps(value, ensure_ascii=False)}")
+    finally:
+        store.close()
+
+
+def admin_memory_search(query: str, namespace: str | None = None, limit: int = 10) -> None:
+    store = SQLiteMemoryStore(db_path=MEMORY_DB_PATH)
+    try:
+        rows = store.search(query, namespace=namespace, limit=limit)
+        if not rows:
+            console.print("[bold yellow]No memory entries matched your query.[/]")
+            return
+
+        table = Table(title="Memory Search Results")
+        table.add_column("Namespace", style="cyan")
+        table.add_column("Key", style="magenta")
+        table.add_column("Value", style="white")
+        table.add_column("Updated", style="dim")
+        for row in rows:
+            table.add_row(
+                str(row.get("namespace", "")),
+                str(row.get("key", "")),
+                json.dumps(row.get("value"), ensure_ascii=False),
+                str(row.get("updated_at", "")),
+            )
+        console.print(table)
+    finally:
+        store.close()
+
+
 def main() -> None:
     """Entrypoint with CLI args."""
     setup_logging()
@@ -900,6 +1013,20 @@ def main() -> None:
     
     sync_parser = subparsers.add_parser("domain-sync", help="Sync capabilities from remote domain")
     sync_parser.add_argument("name", help="Domain name")
+
+    memory_set_parser = subparsers.add_parser("memory-set", help="Set memory key/value")
+    memory_set_parser.add_argument("key", help="Memory key")
+    memory_set_parser.add_argument("value", help="Memory value (JSON or text)")
+    memory_set_parser.add_argument("--namespace", default="global", help="Memory namespace (default: global)")
+
+    memory_get_parser = subparsers.add_parser("memory-get", help="Get memory key")
+    memory_get_parser.add_argument("key", help="Memory key")
+    memory_get_parser.add_argument("--namespace", default="global", help="Memory namespace (default: global)")
+
+    memory_search_parser = subparsers.add_parser("memory-search", help="Search memory entries")
+    memory_search_parser.add_argument("query", help="Search query")
+    memory_search_parser.add_argument("--namespace", default=None, help="Optional namespace filter")
+    memory_search_parser.add_argument("--limit", type=int, default=10, help="Max results")
     
     args = parser.parse_args()
     
@@ -909,6 +1036,12 @@ def main() -> None:
         admin_add_domain(args.name, args.type, args.config)
     elif args.command == "domain-sync":
         admin_sync_domain(args.name)
+    elif args.command == "memory-set":
+        admin_memory_set(args.key, args.value, namespace=args.namespace)
+    elif args.command == "memory-get":
+        admin_memory_get(args.key, namespace=args.namespace)
+    elif args.command == "memory-search":
+        admin_memory_search(args.query, namespace=args.namespace, limit=args.limit)
     elif args.command == "run-telegram":
         try:
             asyncio.run(run_telegram_loop())

@@ -109,14 +109,20 @@ class RegistryLoader:
             capability="chat",
             description="General conversation and help",
             schema={"message": "string"},
-            metadata={"explanation_template": "{result[response]}"},
+            metadata={
+                "explanation_template": "{result[response]}",
+                "planner_available": False,
+            },
         )
         self.db.register_capability(
             domain_name="general",
             capability="list_capabilities",
             description="List available domains and capabilities grouped by domain",
             schema={"message": "string"},
-            metadata={"explanation_template": "{result[response]}"},
+            metadata={
+                "explanation_template": "{result[response]}",
+                "planner_available": False,
+            },
         )
 
     def sync_local_to_db(self) -> None:

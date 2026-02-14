@@ -15,6 +15,7 @@ Prohibitions:
 
 import logging
 import inspect
+import os
 
 from shared.models import DomainOutput, IntentOutput, ModelPolicy
 from registry.domain_registry import HandlerRegistry
@@ -29,6 +30,12 @@ class Orchestrator:
     def __init__(self, domain_registry: HandlerRegistry, model_selector: ModelSelector):
         self.domain_registry = domain_registry
         self.model_selector = model_selector
+        self.confidence_threshold = float(
+            os.getenv(
+                "ORCHESTRATOR_CONFIDENCE_THRESHOLD",
+                os.getenv("SOFT_CONFIRM_THRESHOLD", "0.94"),
+            )
+        )
         self.clarification_policy = ModelPolicy(
             model_name="llama3.1:8b",
             temperature=0.7,
@@ -45,12 +52,15 @@ class Orchestrator:
         logger.info("Orchestrator processing: domain=%s capability=%s (conf=%.2f)", 
                     intent.domain, intent.capability, intent.confidence)
 
-        # 1. Confidence Gating (User Requirement: 98% threshold)
+        # 1. Confidence Gating
         # Keep general-domain responses responsive even when fallback confidence is low.
-        CONFIDENCE_THRESHOLD = 0.98
         is_general_domain = intent.domain == "general"
-        if intent.confidence < CONFIDENCE_THRESHOLD and not is_general_domain:
-            logger.warning("Intent confidence too low: %.2f < %.2f", intent.confidence, CONFIDENCE_THRESHOLD)
+        if intent.confidence < self.confidence_threshold and not is_general_domain:
+            logger.warning(
+                "Intent confidence too low: %.2f < %.2f",
+                intent.confidence,
+                self.confidence_threshold,
+            )
             
             question = self._generate_clarification_question(intent)
             

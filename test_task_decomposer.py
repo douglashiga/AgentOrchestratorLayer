@@ -4,16 +4,44 @@ from shared.models import IntentOutput
 
 def test_finance_notify_plan_is_multi_domain():
     decomposer = TaskDecomposer(
-        known_capabilities=[
-            "get_stock_price",
-            "send_telegram_message",
+        capability_catalog=[
+            {
+                "domain": "finance",
+                "capability": "get_stock_price",
+                "metadata": {
+                    "composition": {
+                        "followup_roles": ["notifier"],
+                        "enabled_if": {"path": "parameters.notify", "equals": True},
+                    }
+                },
+            },
+            {
+                "domain": "communication",
+                "capability": "send_telegram_message",
+                "metadata": {
+                    "composition": {
+                        "role": "notifier",
+                        "priority": 100,
+                        "param_map": {
+                            "chat_id": {
+                                "from_parameters": ["chat_id"],
+                                "default": "${ENV:TELEGRAM_DEFAULT_CHAT_ID}",
+                            },
+                            "message": {
+                                "from_parameters": ["message"],
+                                "default": "${1.explanation}",
+                            },
+                        },
+                    }
+                },
+            },
         ]
     )
     intent = IntentOutput(
         domain="finance",
         capability="get_stock_price",
         confidence=1.0,
-        parameters={"symbol": "AAPL"},
+        parameters={"symbol": "AAPL", "notify": True},
         original_query="pegue o preco da aapl e envie no telegram",
     )
 
@@ -27,7 +55,20 @@ def test_finance_notify_plan_is_multi_domain():
 
 
 def test_default_plan_is_single_step():
-    decomposer = TaskDecomposer(known_capabilities=["get_stock_price"])
+    decomposer = TaskDecomposer(
+        capability_catalog=[
+            {
+                "domain": "finance",
+                "capability": "get_stock_price",
+                "metadata": {
+                    "composition": {
+                        "followup_roles": ["notifier"],
+                        "enabled_if": {"path": "parameters.notify", "equals": True},
+                    }
+                },
+            }
+        ]
+    )
     intent = IntentOutput(
         domain="finance",
         capability="get_stock_price",

@@ -31,7 +31,7 @@ async def run_flow() -> int:
             domain="finance",
             capability="get_stock_price",
             confidence=1.0,
-            parameters={"symbol": symbol},
+            parameters={"symbol": symbol, "notify": True},
             original_query=f"pegue o preco da {symbol} e envie no telegram",
         )
 
@@ -46,6 +46,7 @@ async def run_flow() -> int:
         print("Result keys:", list(output.result.keys()))
         return 0 if output.status == "success" else 1
     finally:
+        planner.close()
         conversation.close()
         model_selector.close()
         mcp_adapter.close()
