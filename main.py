@@ -12,6 +12,7 @@ import os
 import asyncio
 import re
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 from rich.panel import Panel
@@ -20,6 +21,7 @@ from rich.text import Text
 from rich import box
 
 from entry.cli import CLIAdapter
+from entry.telegram import TelegramEntryAdapter
 from conversation.manager import ConversationManager
 from intent.adapter import IntentAdapter
 from planner.service import PlannerService
@@ -32,6 +34,7 @@ from skills.gateway import SkillGateway
 from skills.registry import SkillRegistry
 from skills.implementations.mcp_adapter import MCPAdapter
 from models.selector import ModelSelector
+from shared.models import EntryRequest
 
 # ─── Configuration ──────────────────────────────────────────────
 
@@ -65,6 +68,21 @@ SOFT_CONFIRMATION_ENABLED = os.getenv("SOFT_CONFIRMATION_ENABLED", "true").strip
     "on",
 )
 SOFT_CONFIRM_THRESHOLD = float(os.getenv("SOFT_CONFIRM_THRESHOLD", "0.96"))
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_ENTRY_POLL_TIMEOUT_SECONDS = int(os.getenv("TELEGRAM_ENTRY_POLL_TIMEOUT_SECONDS", "20"))
+TELEGRAM_ENTRY_REQUEST_TIMEOUT_SECONDS = float(os.getenv("TELEGRAM_ENTRY_REQUEST_TIMEOUT_SECONDS", "35"))
+TELEGRAM_ENTRY_ALLOWED_CHAT_IDS = {
+    item.strip()
+    for item in os.getenv("TELEGRAM_ENTRY_ALLOWED_CHAT_IDS", "").split(",")
+    if item.strip()
+}
+TELEGRAM_ENTRY_DEBUG = os.getenv("TELEGRAM_ENTRY_DEBUG", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+TELEGRAM_ENTRY_DEBUG_MAX_CHARS = int(os.getenv("TELEGRAM_ENTRY_DEBUG_MAX_CHARS", "3200"))
 
 # ─── Rich Console ───────────────────────────────────────────────
 
@@ -154,7 +172,7 @@ def _extract_message_candidate(query: str) -> str | None:
     return None
 
 
-def _normalize_intent_parameters(intent, registry):
+def _normalize_intent_parameters(intent, registry, entry_request: EntryRequest | None = None):
     """Normalize alias params and apply metadata defaults before planning/execution."""
     params = dict(intent.parameters or {})
     capability = intent.capability
@@ -178,18 +196,32 @@ def _normalize_intent_parameters(intent, registry):
                 params["message"] = inferred
 
         default_chat_id = os.getenv("TELEGRAM_DEFAULT_CHAT_ID", "").strip()
+        source_chat_id = ""
+        if entry_request and entry_request.metadata.get("source") == "telegram":
+            source_chat_id = str(entry_request.metadata.get("chat_id", "")).strip()
+
         if capability == "send_telegram_group_message":
             if not params.get("group_id") and params.get("chat_id"):
                 params["group_id"] = params.get("chat_id")
+            if not params.get("group_id") and source_chat_id:
+                params["group_id"] = source_chat_id
             if not params.get("group_id") and default_chat_id:
                 params["group_id"] = default_chat_id
-            if params.get("group_id") and not _looks_like_chat_id(str(params["group_id"])) and default_chat_id:
-                params["group_id"] = default_chat_id
+            if params.get("group_id") and not _looks_like_chat_id(str(params["group_id"])):
+                if source_chat_id:
+                    params["group_id"] = source_chat_id
+                elif default_chat_id:
+                    params["group_id"] = default_chat_id
         else:
+            if not params.get("chat_id") and source_chat_id:
+                params["chat_id"] = source_chat_id
             if not params.get("chat_id") and default_chat_id:
                 params["chat_id"] = default_chat_id
-            if params.get("chat_id") and not _looks_like_chat_id(str(params["chat_id"])) and default_chat_id:
-                params["chat_id"] = default_chat_id
+            if params.get("chat_id") and not _looks_like_chat_id(str(params["chat_id"])):
+                if source_chat_id:
+                    params["chat_id"] = source_chat_id
+                elif default_chat_id:
+                    params["chat_id"] = default_chat_id
 
     # Apply metadata defaults for missing/null params.
     metadata = registry.get_metadata(capability) if registry else {}
@@ -231,6 +263,51 @@ def _build_soft_confirmation_message(intent, registry) -> str:
         lines.append(f"- Valores padrão aplicados: {', '.join(defaults_used)}")
     lines.append("Confirmo a execução com esses valores? (sim/não)")
     return "\n".join(lines)
+
+
+def _json_default(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    return str(value)
+
+
+def _split_text_for_telegram(text: str, max_chars: int) -> list[str]:
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks: list[str] = []
+    start = 0
+    while start < len(text):
+        end = min(start + max_chars, len(text))
+        # Try to split on newline for readability.
+        if end < len(text):
+            newline_pos = text.rfind("\n", start, end)
+            if newline_pos > start:
+                end = newline_pos
+        chunks.append(text[start:end])
+        start = end + (1 if end < len(text) and text[end] == "\n" else 0)
+    return chunks
+
+
+async def _send_telegram_debug_json(
+    telegram_entry: TelegramEntryAdapter,
+    chat_id: str,
+    stage: str,
+    payload: Any,
+) -> None:
+    if not TELEGRAM_ENTRY_DEBUG:
+        return
+
+    try:
+        body = json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default)
+    except Exception:
+        body = str(payload)
+
+    chunks = _split_text_for_telegram(body, TELEGRAM_ENTRY_DEBUG_MAX_CHARS)
+    total = len(chunks)
+    for idx, chunk in enumerate(chunks, start=1):
+        header = f"[debug:{stage} {idx}/{total}]"
+        await telegram_entry.send_message(chat_id, f"{header}\n{chunk}")
 
 
 def build_pipeline() -> tuple[
@@ -413,6 +490,194 @@ def render_intent_debug(intent) -> None:
     console.print(Panel(table, title="🧠 Intent (LLM)", border_style="yellow", box=box.ROUNDED))
 
 
+async def run_telegram_loop() -> None:
+    """Telegram polling loop using the same orchestration pipeline."""
+    conversation: ConversationManager | None = None
+    model_selector: ModelSelector | None = None
+    mcp_adapter: MCPAdapter | None = None
+    pending_confirmation_by_session: dict[str, Any] = {}
+
+    if not TELEGRAM_BOT_TOKEN:
+        console.print("[bold red]TELEGRAM_BOT_TOKEN is not configured.[/]")
+        return
+
+    console.print(Panel(
+        Text.from_markup(
+            "[bold cyan]Agent Orchestrator (Telegram Entry)[/bold cyan]\n"
+            f"[dim]Intent: {OLLAMA_INTENT_MODEL} • Chat: {OLLAMA_CHAT_MODEL}[/dim]\n"
+            f"[dim]Polling timeout: {TELEGRAM_ENTRY_POLL_TIMEOUT_SECONDS}s[/dim]"
+        ),
+        title="📨",
+        border_style="cyan",
+        box=box.DOUBLE,
+    ))
+
+    with console.status("[yellow]Loading models...[/yellow]", spinner="dots"):
+        preload_models()
+
+    try:
+        (
+            _cli,
+            conversation,
+            intent_adapter,
+            planner,
+            engine,
+            model_selector,
+            mcp_adapter,
+        ) = build_pipeline()
+    except Exception as e:
+        console.print(f"[bold red]Failed to initialize pipeline:[/] {e}")
+        return
+
+    telegram_entry = TelegramEntryAdapter(
+        bot_token=TELEGRAM_BOT_TOKEN,
+        poll_timeout_seconds=TELEGRAM_ENTRY_POLL_TIMEOUT_SECONDS,
+        request_timeout_seconds=TELEGRAM_ENTRY_REQUEST_TIMEOUT_SECONDS,
+        allowed_chat_ids=TELEGRAM_ENTRY_ALLOWED_CHAT_IDS,
+    )
+    update_offset: int | None = None
+    console.print("[dim]Telegram entry loop started.[/dim]")
+
+    try:
+        while True:
+            entries, update_offset = await telegram_entry.poll_updates(update_offset)
+            if not entries:
+                continue
+
+            for entry_request in entries:
+                chat_id = str(entry_request.metadata.get("chat_id", "")).strip()
+                if not chat_id:
+                    continue
+
+                try:
+                    await _send_telegram_debug_json(
+                        telegram_entry,
+                        chat_id,
+                        "entry_request",
+                        entry_request.model_dump(mode="json"),
+                    )
+                    history = conversation.get_history(entry_request.session_id)
+                    pending_intent = pending_confirmation_by_session.get(entry_request.session_id)
+
+                    if pending_intent is not None:
+                        if _is_yes(entry_request.input_text):
+                            intent = pending_intent.model_copy(update={"confidence": 1.0})
+                            pending_confirmation_by_session.pop(entry_request.session_id, None)
+                            await telegram_entry.send_message(chat_id, "Confirmado. Executando...")
+                            await _send_telegram_debug_json(
+                                telegram_entry,
+                                chat_id,
+                                "confirmation_result",
+                                {"confirmed": True, "intent": intent.model_dump(mode="json")},
+                            )
+                        elif _is_no(entry_request.input_text):
+                            pending_confirmation_by_session.pop(entry_request.session_id, None)
+                            msg = "Perfeito. Me diga novamente como deseja executar."
+                            conversation.save(entry_request.session_id, "user", entry_request.input_text)
+                            conversation.save(entry_request.session_id, "assistant", msg)
+                            await _send_telegram_debug_json(
+                                telegram_entry,
+                                chat_id,
+                                "confirmation_result",
+                                {"confirmed": False, "reason": "user_declined"},
+                            )
+                            await telegram_entry.send_message(chat_id, msg)
+                            continue
+                        else:
+                            msg = "Responda apenas 'sim' ou 'não' para confirmar."
+                            conversation.save(entry_request.session_id, "user", entry_request.input_text)
+                            conversation.save(entry_request.session_id, "assistant", msg)
+                            await _send_telegram_debug_json(
+                                telegram_entry,
+                                chat_id,
+                                "confirmation_result",
+                                {"confirmed": None, "reason": "invalid_confirmation_text"},
+                            )
+                            await telegram_entry.send_message(chat_id, msg)
+                            continue
+                    else:
+                        intent = intent_adapter.extract(
+                            entry_request.input_text,
+                            history,
+                            session_id=entry_request.session_id,
+                        )
+                        await _send_telegram_debug_json(
+                            telegram_entry,
+                            chat_id,
+                            "intent_extracted",
+                            intent.model_dump(mode="json"),
+                        )
+                        intent = _normalize_intent_parameters(
+                            intent,
+                            engine.orchestrator.domain_registry,
+                            entry_request=entry_request,
+                        )
+                        await _send_telegram_debug_json(
+                            telegram_entry,
+                            chat_id,
+                            "intent_normalized",
+                            intent.model_dump(mode="json"),
+                        )
+
+                        if _should_soft_confirm(intent):
+                            question = _build_soft_confirmation_message(intent, engine.orchestrator.domain_registry)
+                            pending_confirmation_by_session[entry_request.session_id] = intent
+                            conversation.save(entry_request.session_id, "user", entry_request.input_text)
+                            conversation.save(entry_request.session_id, "assistant", question)
+                            await _send_telegram_debug_json(
+                                telegram_entry,
+                                chat_id,
+                                "confirmation_prompt",
+                                {"question": question, "intent": intent.model_dump(mode="json")},
+                            )
+                            await telegram_entry.send_message(chat_id, question)
+                            continue
+
+                    plan = planner.generate_plan(intent)
+                    await _send_telegram_debug_json(
+                        telegram_entry,
+                        chat_id,
+                        "execution_plan",
+                        plan.model_dump(mode="json"),
+                    )
+                    output = await engine.execute_plan(plan, original_intent=intent)
+                    await _send_telegram_debug_json(
+                        telegram_entry,
+                        chat_id,
+                        "execution_output",
+                        output.model_dump(mode="json"),
+                    )
+
+                    conversation.save(entry_request.session_id, "user", entry_request.input_text)
+                    if output.status in ("success", "clarification"):
+                        response_text = output.explanation
+                    else:
+                        response_text = f"Error: {output.metadata.get('error', 'unknown')}"
+                    conversation.save(entry_request.session_id, "assistant", response_text)
+
+                    await telegram_entry.send_message(chat_id, response_text)
+
+                except Exception as e:
+                    logger.exception("Telegram entry processing failed for chat_id=%s", chat_id)
+                    await _send_telegram_debug_json(
+                        telegram_entry,
+                        chat_id,
+                        "entry_error",
+                        {"error": str(e)},
+                    )
+                    await telegram_entry.send_message(chat_id, f"Erro ao processar sua solicitação: {e}")
+
+    except KeyboardInterrupt:
+        console.print("\n[dim]Telegram loop interrupted. Goodbye! 👋[/dim]")
+    finally:
+        if conversation:
+            conversation.close()
+        if model_selector:
+            model_selector.close()
+        if mcp_adapter:
+            mcp_adapter.close()
+
+
 async def run_agent_loop() -> None:
     """Interactive Agent Loop."""
     conversation: ConversationManager | None = None
@@ -510,7 +775,11 @@ async def run_agent_loop() -> None:
                             conversation.save(entry_request.session_id, "assistant", f"Error: {e}")
                             continue
 
-                    intent = _normalize_intent_parameters(intent, engine.orchestrator.domain_registry)
+                    intent = _normalize_intent_parameters(
+                        intent,
+                        engine.orchestrator.domain_registry,
+                        entry_request=entry_request,
+                    )
 
                     # Show intent debug
                     render_intent_debug(intent)
@@ -619,6 +888,7 @@ def main() -> None:
     
     # Run Agent
     subparsers.add_parser("run", help="Run interactive agent")
+    subparsers.add_parser("run-telegram", help="Run Telegram polling entry channel")
     
     # Domain Management
     subparsers.add_parser("domain-list", help="List registered domains")
@@ -639,6 +909,11 @@ def main() -> None:
         admin_add_domain(args.name, args.type, args.config)
     elif args.command == "domain-sync":
         admin_sync_domain(args.name)
+    elif args.command == "run-telegram":
+        try:
+            asyncio.run(run_telegram_loop())
+        except KeyboardInterrupt:
+            pass
     elif args.command == "run" or args.command is None:
         try:
             asyncio.run(run_agent_loop())

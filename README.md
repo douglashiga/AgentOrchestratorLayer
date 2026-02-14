@@ -146,6 +146,12 @@ Example `domains.bootstrap.json`:
 - `SEED_CORE_DEFAULTS` (default: `true`)
 - `SOFT_CONFIRMATION_ENABLED` (default: `true`)
 - `SOFT_CONFIRM_THRESHOLD` (default: `0.96`) -> asks confirmation only when confidence is below this value
+- `TELEGRAM_BOT_TOKEN` (required for Telegram entry channel)
+- `TELEGRAM_ENTRY_POLL_TIMEOUT_SECONDS` (default: `20`)
+- `TELEGRAM_ENTRY_REQUEST_TIMEOUT_SECONDS` (default: `35`)
+- `TELEGRAM_ENTRY_ALLOWED_CHAT_IDS` (optional comma-separated allowlist for inbound Telegram messages)
+- `TELEGRAM_ENTRY_DEBUG` (default: `true`) -> sends debug JSON messages for each pipeline layer in Telegram entry mode
+- `TELEGRAM_ENTRY_DEBUG_MAX_CHARS` (default: `3200`) -> max JSON chunk size per debug message
 
 ### Communication domain env vars
 
@@ -167,6 +173,20 @@ This starts:
 - `finance-server` on `:8001`
 - `communication-domain` on `:8002`
 - `agent`
+
+### Entry channels
+
+- CLI entry:
+
+```bash
+python3 main.py run
+```
+
+- Telegram entry (long polling):
+
+```bash
+python3 main.py run-telegram
+```
 
 ## Simple Tests
 
