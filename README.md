@@ -174,6 +174,7 @@ This starts:
 - `communication-domain` on `:8002`
 - `agent`
 - `open-webui` on `:3000`
+- `agent-api` on `:8010` (`/v1/models`, `/v1/chat/completions`)
 
 ### Open WebUI
 
@@ -183,15 +184,19 @@ Access:
 - `http://localhost:3000`
 
 Default connection envs in compose:
-- `OPENAI_API_BASE_URL` (default: `http://host.docker.internal:8000/v1`)
+- `OPENAI_API_BASE_URL` (default: `http://agent-api:8010/v1`)
 - `OPENAI_API_KEY` (default: `sk-local-dev`)
 
 If your OpenAI-compatible endpoint runs at a different URL, set it in `.env`:
 
 ```env
-OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1
+OPENAI_API_BASE_URL=http://host.docker.internal:8010/v1
 OPENAI_API_KEY=sk-local-dev
 ```
+
+Agent OpenAI-compatible endpoints:
+- `GET http://localhost:8010/v1/models`
+- `POST http://localhost:8010/v1/chat/completions`
 
 ### Entry channels
 

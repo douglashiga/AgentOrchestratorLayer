@@ -50,19 +50,43 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  agent-api:
+    build: .
+    container_name: finance-agent-api
+    environment:
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - REGISTRY_DB_PATH=/app/registry.db
+      - DB_PATH=/app/agent.db
+      - MCP_URL=${MCP_URL:-http://host.docker.internal:8000/sse}
+      - BOOTSTRAP_DOMAINS_FILE=/app/domains.bootstrap.json
+      - AUTO_SYNC_REMOTE_CAPABILITIES=true
+      - PYTHONPATH=/app
+    volumes:
+      - ./registry.db:/app/registry.db
+      - ./agent.db:/app/agent.db
+      - ./domains.bootstrap.json:/app/domains.bootstrap.json:ro
+    depends_on:
+      - finance-server
+      - communication-domain
+    command: uvicorn api.openai_server:app --host 0.0.0.0 --port 8010
+    ports:
+      - "8010:8010"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     environment:
       - WEBUI_AUTH=False
-      - OPENAI_API_BASE_URL=${OPENAI_API_BASE_URL:-http://host.docker.internal:8000/v1}
+      - OPENAI_API_BASE_URL=${OPENAI_API_BASE_URL:-http://agent-api:8010/v1}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-sk-local-dev}
     ports:
       - "3000:8080"
     volumes:
       - open-webui-data:/app/backend/data
     depends_on:
-      - agent
+      - agent-api
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
