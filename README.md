@@ -32,6 +32,8 @@ graph TD
 - Capability discovery from remote manifests.
 - Multi-step composition driven by capability metadata (`metadata.composition`).
 - Function-calling planning loop with strict validation/fallback.
+- Deterministic guardrail: notifier steps are allowed only with explicit `notify=true`.
+- Capability pre-flow engine in finance service (metadata/schema-driven, no method hardcode).
 - Soft confirmation flow for low-confidence intents.
 - Telegram entry channel with per-step JSON debug trace.
 - OpenAI-compatible API for Open WebUI.
@@ -67,6 +69,32 @@ Structured memory example:
   "capital_available": 25000
 }
 ```
+
+## Capability Flow Engine (Service-side)
+
+The finance service now applies deterministic pre-flows before skill execution, driven by capability metadata (manifest) and schema inference.
+
+Supported pre-flow steps:
+- `resolve_symbol`
+- `resolve_symbol_list`
+
+Example metadata (manifest):
+
+```json
+{
+  "flow": {
+    "pre": [
+      { "type": "resolve_symbol", "param": "symbol", "search_capability": "search_symbol" }
+    ]
+  }
+}
+```
+
+Fallback behavior when `flow.pre` is not declared:
+- if schema has `symbol` -> auto `resolve_symbol`
+- if schema has `symbols` -> auto `resolve_symbol_list`
+
+This keeps flows dynamic and reusable across methods.
 
 ## Project Structure
 
@@ -311,6 +339,9 @@ Important:
   - Send at least one message to the bot, then call `getUpdates` again.
 - Many clarification prompts:
   - Check `SOFT_CONFIRM_THRESHOLD` and `ORCHESTRATOR_CONFIDENCE_THRESHOLD`.
+- Wrong ticker / ambiguous ticker on `get_stock_price`:
+  - The finance handler now runs deterministic `search_symbol` resolution first.
+  - If multiple matches are found, it returns a clarification asking which ticker you mean.
 - Port conflict on `8001`:
   - Finance host port is already moved to `8003` in compose.
 

@@ -128,3 +128,58 @@ def test_function_calling_planner_rejects_unknown_capability():
 
     plan = planner.expand_plan(intent, _base_plan())
     assert len(plan.steps) == 1
+
+
+def test_function_calling_planner_rejects_notifier_without_explicit_notify():
+    os.environ["PLANNER_FUNCTION_CALLING_ENABLED"] = "true"
+    os.environ["PLANNER_FUNCTION_CHOICE_MODE"] = "auto"
+
+    selector = DummySelector(
+        {
+            "decision": "add_step",
+            "combine_mode": "report",
+            "step": {
+                "domain": "communication",
+                "capability": "send_telegram_message",
+                "params": {
+                    "chat_id": "${ENV:TELEGRAM_DEFAULT_CHAT_ID}",
+                    "message": "${1.explanation}",
+                },
+                "depends_on": [1],
+            },
+        }
+    )
+    catalog = [
+        {
+            "domain": "finance",
+            "capability": "get_stock_price",
+            "description": "",
+            "schema": {"type": "object", "properties": {"symbol": {"type": "string"}}},
+            "metadata": {},
+        },
+        {
+            "domain": "communication",
+            "capability": "send_telegram_message",
+            "description": "",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "chat_id": {"type": "string"},
+                    "message": {"type": "string"},
+                },
+            },
+            "metadata": {"composition": {"role": "notifier"}},
+        },
+    ]
+
+    planner = FunctionCallingPlanner(model_selector=selector, capability_catalog=catalog)
+    intent = IntentOutput(
+        domain="finance",
+        capability="get_stock_price",
+        confidence=0.99,
+        parameters={"symbol": "AAPL"},
+        original_query="qual preco da aapl",
+    )
+
+    plan = planner.expand_plan(intent, _base_plan())
+    assert len(plan.steps) == 1

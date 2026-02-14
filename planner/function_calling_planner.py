@@ -85,7 +85,7 @@ class FunctionCallingPlanner:
             if decision != "add_step":
                 break
 
-            new_step = self._proposal_to_step(proposal, steps)
+            new_step = self._proposal_to_step(proposal, steps, intent=intent)
             if not new_step:
                 break
 
@@ -125,6 +125,8 @@ class FunctionCallingPlanner:
         for entry in self._eligible_candidates(current_steps):
             metadata = entry.get("metadata")
             if not isinstance(metadata, dict):
+                continue
+            if not self._is_step_allowed_by_intent(intent=intent, catalog_entry=entry):
                 continue
             composition = metadata.get("composition")
             if not isinstance(composition, dict):
@@ -232,11 +234,12 @@ class FunctionCallingPlanner:
             "Rules:\n"
             "1. Add a step ONLY if it clearly improves the user outcome.\n"
             "2. If user requested send/notify/share, add a communication/notifier capability when available.\n"
-            "3. Use memory_context values when they are relevant and deterministic.\n"
-            "4. You may reference previous step output with placeholders like ${1.explanation}.\n"
-            "5. If no extra action is needed, return decision=stop.\n"
-            "6. Never output capabilities not present in candidates.\n"
-            "7. Never include text outside JSON.\n"
+            "3. Never add notifier capabilities unless intent.parameters.notify is true.\n"
+            "4. Use memory_context values when they are relevant and deterministic.\n"
+            "5. You may reference previous step output with placeholders like ${1.explanation}.\n"
+            "6. If no extra action is needed, return decision=stop.\n"
+            "7. Never output capabilities not present in candidates.\n"
+            "8. Never include text outside JSON.\n"
         )
 
         payload = {
@@ -258,6 +261,7 @@ class FunctionCallingPlanner:
         self,
         proposal: dict[str, Any],
         current_steps: list[ExecutionStep],
+        intent: IntentOutput,
     ) -> ExecutionStep | None:
         step_obj = proposal.get("step")
         if not isinstance(step_obj, dict):
@@ -271,6 +275,9 @@ class FunctionCallingPlanner:
         catalog_entry = self._resolve_catalog_entry(domain, capability)
         if not catalog_entry:
             logger.info("FunctionCallingPlanner rejected unknown capability: %s.%s", domain, capability)
+            return None
+        if not self._is_step_allowed_by_intent(intent=intent, catalog_entry=catalog_entry):
+            logger.info("FunctionCallingPlanner rejected step by intent policy: %s.%s", domain, capability)
             return None
 
         params = step_obj.get("params", {})
@@ -349,6 +356,22 @@ class FunctionCallingPlanner:
             if entry.get("domain") == domain and entry.get("capability") == capability:
                 return entry
         return None
+
+    def _is_step_allowed_by_intent(self, intent: IntentOutput, catalog_entry: dict[str, Any]) -> bool:
+        """
+        Deterministic guardrail:
+        notifier follow-up steps are allowed only with explicit notify=true.
+        """
+        metadata = catalog_entry.get("metadata")
+        if not isinstance(metadata, dict):
+            return True
+        composition = metadata.get("composition")
+        if not isinstance(composition, dict):
+            return True
+        role = str(composition.get("role", "")).strip().lower()
+        if role != "notifier":
+            return True
+        return bool((intent.parameters or {}).get("notify") is True)
 
     def _sanitize_params(self, catalog_entry: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         schema = catalog_entry.get("schema") or {}

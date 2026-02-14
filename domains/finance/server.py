@@ -77,10 +77,20 @@ def health_check():
 METADATA_OVERRIDES = {
     "get_stock_price": {
         "default_market": "SE",
-        "explanation_template": "{symbol} is trading at {result[price]} {currency}."
+        "explanation_template": "{symbol} is trading at {result[price]} {currency}.",
+        "flow": {
+            "pre": [
+                {"type": "resolve_symbol", "param": "symbol", "search_capability": "search_symbol"}
+            ]
+        },
     },
     "get_historical_data": {
-        "explanation_template": "Historical data for {symbol} ({params[period]})."
+        "explanation_template": "Historical data for {symbol} ({params[period]}).",
+        "flow": {
+            "pre": [
+                {"type": "resolve_symbol", "param": "symbol", "search_capability": "search_symbol"}
+            ]
+        },
     },
     "get_stock_screener": {
         "market_required": True,
@@ -118,7 +128,12 @@ METADATA_OVERRIDES = {
     },
     "compare_fundamentals": {
         "symbols_required": True,
-        "explanation_template": "Fundamental comparison."
+        "explanation_template": "Fundamental comparison.",
+        "flow": {
+            "pre": [
+                {"type": "resolve_symbol_list", "param": "symbols", "search_capability": "search_symbol"}
+            ]
+        },
     },
     "list_jobs": {
         "explanation_template": "Data pipeline job list."
