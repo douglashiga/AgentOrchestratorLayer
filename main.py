@@ -64,8 +64,7 @@ SOFT_CONFIRMATION_ENABLED = os.getenv("SOFT_CONFIRMATION_ENABLED", "true").strip
     "yes",
     "on",
 )
-SOFT_CONFIRM_MIN_CONFIDENCE = float(os.getenv("SOFT_CONFIRM_MIN_CONFIDENCE", "0.90"))
-SOFT_CONFIRM_MAX_CONFIDENCE = float(os.getenv("SOFT_CONFIRM_MAX_CONFIDENCE", "0.98"))
+SOFT_CONFIRM_THRESHOLD = float(os.getenv("SOFT_CONFIRM_THRESHOLD", "0.96"))
 
 # ─── Rich Console ───────────────────────────────────────────────
 
@@ -208,7 +207,7 @@ def _should_soft_confirm(intent) -> bool:
         return False
     if intent.domain == "general":
         return False
-    return SOFT_CONFIRM_MIN_CONFIDENCE <= intent.confidence < SOFT_CONFIRM_MAX_CONFIDENCE
+    return intent.confidence < SOFT_CONFIRM_THRESHOLD
 
 
 def _build_soft_confirmation_message(intent, registry) -> str:
