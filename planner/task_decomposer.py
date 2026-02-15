@@ -34,6 +34,17 @@ class TaskDecomposer:
         source_meta = self._metadata_of(source_entry)
 
         base_step = self._build_primary_step(intent)
+
+        # Check for generic array parameter decomposition rules in metadata
+        array_decomp_plan = self._build_array_decomposition_plan(intent, source_meta)
+        if array_decomp_plan is not None:
+            return self._append_followup_if_configured(
+                base_plan=array_decomp_plan,
+                intent=intent,
+                source_meta=source_meta,
+            )
+
+        # Fallback: legacy multi-symbol plan for backward compatibility
         multi_symbol_plan = self._build_multi_symbol_price_plan(intent)
         if multi_symbol_plan is not None:
             return self._append_followup_if_configured(
@@ -327,6 +338,77 @@ class TaskDecomposer:
             max_concurrency=min(4, max(1, len(steps))),
             steps=steps,
         )
+
+    def _build_array_decomposition_plan(
+        self,
+        intent: IntentOutput,
+        source_meta: dict[str, Any],
+    ) -> ExecutionPlan | None:
+        """
+        Build parallel steps for array parameters based on metadata decomposition rules.
+
+        Reads decomposition.array_params from capability metadata and creates N steps
+        for N items in the array parameter.
+        """
+        if not isinstance(source_meta, dict):
+            return None
+
+        decomposition = source_meta.get("decomposition")
+        if not isinstance(decomposition, dict):
+            return None
+
+        array_params = decomposition.get("array_params")
+        if not isinstance(array_params, list):
+            return None
+
+        params = self._runtime_parameters(intent.parameters)
+
+        # For each decomposition rule
+        for rule in array_params:
+            param_name = str(rule.get("param_name", "")).strip()
+            single_param_name = str(rule.get("single_param_name", "")).strip()
+
+            if not param_name or not single_param_name:
+                continue
+
+            # Check if this parameter exists and is an array with 2+ items
+            array_value = params.get(param_name)
+            if not isinstance(array_value, list) or len(array_value) <= 1:
+                continue
+
+            # Create parallel steps: one per array item
+            steps: list[ExecutionStep] = []
+            shared_params = {
+                key: value
+                for key, value in params.items()
+                if key not in {param_name, single_param_name}
+            }
+
+            for idx, item in enumerate(array_value, start=1):
+                step_params = dict(shared_params)
+                step_params[single_param_name] = item
+
+                steps.append(
+                    ExecutionStep(
+                        id=idx,
+                        domain=intent.domain,
+                        capability=intent.capability,
+                        params=step_params,
+                        depends_on=[],
+                        required=True,
+                        output_key=f"result_{idx}",
+                    )
+                )
+
+            max_concurrency = rule.get("max_concurrency", 4)
+            return ExecutionPlan(
+                execution_mode="dag",
+                combine_mode="report",
+                max_concurrency=min(max_concurrency, max(1, len(steps))),
+                steps=steps,
+            )
+
+        return None
 
     def _symbols_from_params(self, params: dict[str, Any]) -> list[str]:
         if not isinstance(params, dict):
