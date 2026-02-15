@@ -189,12 +189,15 @@ class ModelSelector:
         if system_prompt:
             payload["system"] = system_prompt
 
-        response = self._client.post(
-            "/v1/messages",
+        # Use Anthropic API endpoint directly
+        anthropic_url = "https://api.anthropic.com/v1/messages"
+        response = httpx.post(
+            anthropic_url,
             json=payload,
             headers={
                 "x-api-key": self.api_key,
                 "anthropic-version": os.getenv("ANTHROPIC_VERSION", "2023-06-01"),
+                "content-type": "application/json",
             },
             timeout=policy.timeout_seconds,
         )
