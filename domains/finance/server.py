@@ -23,6 +23,7 @@ from fastapi import FastAPI, HTTPException
 
 from shared.models import IntentOutput, DomainOutput
 from domains.finance.handler import FinanceDomainHandler
+from domains.finance.symbol_resolver import SymbolResolver
 from domains.finance.config import MARKET_ALIASES as CONFIG_MARKET_ALIASES
 from skills.gateway import SkillGateway
 from skills.registry import SkillRegistry
@@ -34,48 +35,6 @@ logger = logging.getLogger("finance_server")
 
 # Environment
 MCP_URL = os.getenv("MCP_URL", "http://localhost:8000/sse")
-
-# Global State
-handler: FinanceDomainHandler | None = None
-mcp_adapter: MCPAdapter | None = None
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Manage lifecycle of the Finance Server."""
-    global handler, mcp_adapter
-    
-    logger.info("Starting Finance Server...")
-    
-    # Initialize Skills
-    mcp_adapter = MCPAdapter(mcp_url=MCP_URL)
-    skill_registry = SkillRegistry()
-    skill_registry.register("mcp_finance", mcp_adapter)
-    skill_gateway = SkillGateway(skill_registry)
-    
-    # Initialize Domain Handler with local capabilities for metadata-driven logic
-    from registry.domain_registry import HandlerRegistry
-    mock_registry = HandlerRegistry()
-    manifest = get_manifest()
-    for cap in manifest["capabilities"]:
-        # Register capability to a dummy handler so we can use get_metadata
-        cap_metadata = dict(cap.get("metadata", {}))
-        cap_metadata.setdefault("schema", cap.get("schema", {}))
-        cap_metadata.setdefault("description", cap.get("description", ""))
-        mock_registry.register_capability(cap["name"], None, metadata=cap_metadata)
-
-    handler = FinanceDomainHandler(skill_gateway=skill_gateway, registry=mock_registry)
-    
-    yield
-    
-    logger.info("Shutting down Finance Server...")
-    if mcp_adapter:
-        mcp_adapter.close()
-
-app = FastAPI(title="Finance Domain Service", lifespan=lifespan)
-
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
 
 # Static Metadata Overrides (Templates & Rules)
 # This enriches the raw MCP tools with Orchestrator-specific UI/Logic hints.
@@ -160,6 +119,60 @@ SYMBOL_ALIASES = {
     "SWED": "SWED-A.ST",
     "ASEA": "ASEA-B.ST",
 }
+
+# Global State
+handler: FinanceDomainHandler | None = None
+mcp_adapter: MCPAdapter | None = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage lifecycle of the Finance Server."""
+    global handler, mcp_adapter
+
+    logger.info("Starting Finance Server...")
+
+    # Initialize Skills
+    mcp_adapter = MCPAdapter(mcp_url=MCP_URL)
+    skill_registry = SkillRegistry()
+    skill_registry.register("mcp_finance", mcp_adapter)
+    skill_gateway = SkillGateway(skill_registry)
+
+    # Initialize Symbol Resolver with production SYMBOL_ALIASES
+    symbol_resolver = SymbolResolver(
+        aliases=SYMBOL_ALIASES,
+        skill_gateway=skill_gateway,
+        enable_llm=False,  # LLM fallback disabled in server (only in tests)
+    )
+
+    # Initialize Domain Handler with local capabilities for metadata-driven logic
+    from registry.domain_registry import HandlerRegistry
+    mock_registry = HandlerRegistry()
+    manifest = get_manifest()
+    for cap in manifest["capabilities"]:
+        # Register capability to a dummy handler so we can use get_metadata
+        cap_metadata = dict(cap.get("metadata", {}))
+        cap_metadata.setdefault("schema", cap.get("schema", {}))
+        cap_metadata.setdefault("description", cap.get("description", ""))
+        mock_registry.register_capability(cap["name"], None, metadata=cap_metadata)
+
+    # Pass symbol_resolver with production aliases to handler
+    handler = FinanceDomainHandler(
+        skill_gateway=skill_gateway,
+        registry=mock_registry,
+        symbol_resolver=symbol_resolver,
+    )
+
+    yield
+
+    logger.info("Shutting down Finance Server...")
+    if mcp_adapter:
+        mcp_adapter.close()
+
+app = FastAPI(title="Finance Domain Service", lifespan=lifespan)
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
 
 RANKING_PERIOD_ALIASES = {
     "HOJE": "1d",
