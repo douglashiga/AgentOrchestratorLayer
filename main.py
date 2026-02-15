@@ -402,10 +402,21 @@ def _reroute_general_chat_from_registry(intent, registry, params: dict[str, Any]
 
     rerouted_params: dict[str, Any] = {}
     parameter_specs = metadata.get("parameter_specs")
+
+    # Preserve LLM-extracted parameters that match the target capability's parameter_specs.
+    if isinstance(parameter_specs, dict) and isinstance(params, dict):
+        valid_param_names = set(parameter_specs.keys())
+        for key, value in params.items():
+            if key in valid_param_names and value not in (None, "", []):
+                rerouted_params[key] = value
+
     if isinstance(parameter_specs, dict):
         query_norm = _normalize_text(query)
         for param_name, spec in parameter_specs.items():
             if not isinstance(spec, dict):
+                continue
+            # Only apply alias matching if the parameter was not already set.
+            if param_name in rerouted_params and rerouted_params[param_name] not in (None, "", []):
                 continue
             aliases = spec.get("aliases")
             if not isinstance(aliases, dict):

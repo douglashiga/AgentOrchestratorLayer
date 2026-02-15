@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import unicodedata
+from difflib import SequenceMatcher
 from typing import Any
 
 from models.selector import ModelSelector
@@ -509,6 +510,13 @@ class IntentAdapter:
     def _tokenize_text(self, text: str) -> set[str]:
         return {token for token in re.findall(r"[a-z0-9]{2,}", self._normalize_text(text))}
 
+    def _token_similarity(self, left: str, right: str) -> float:
+        if not left or not right:
+            return 0.0
+        if left == right:
+            return 1.0
+        return SequenceMatcher(None, left, right).ratio()
+
     def _hint_match_score(self, query_norm: str, query_tokens: set[str], hint: str) -> float:
         hint_norm = self._normalize_text(str(hint))
         if not hint_norm:
@@ -517,14 +525,29 @@ class IntentAdapter:
         if hint_norm in query_norm:
             return 8.0
 
-        hint_tokens = {token for token in re.findall(r"[a-z0-9]{2,}", hint_norm)}
+        hint_tokens = [token for token in re.findall(r"[a-z0-9]{2,}", hint_norm) if len(token) >= 3]
         if not hint_tokens or not query_tokens:
             return 0.0
 
-        overlap = hint_tokens & query_tokens
-        if not overlap:
+        matched = 0.0
+        for hint_token in hint_tokens:
+            best = max(
+                (self._token_similarity(hint_token, query_token) for query_token in query_tokens),
+                default=0.0,
+            )
+            if best >= 0.86:
+                matched += 1.0
+            elif best >= 0.75 and len(hint_token) >= 5:
+                matched += 0.5
+
+        if matched == 0:
             return 0.0
-        return 2.0 + (len(overlap) / max(1, len(hint_tokens))) * 4.0
+
+        coverage = matched / max(1, len(hint_tokens))
+        score = coverage * 3.0
+        if coverage >= 0.8 and len(hint_tokens) >= 2:
+            score += 1.0
+        return 2.0 + score
 
     def _hint_values(self, payload: Any) -> list[str]:
         if not isinstance(payload, dict):
@@ -800,9 +823,9 @@ class IntentAdapter:
                         lines.append(f"  - domain intent keywords: {', '.join(valid_keywords[:8])}")
                 hint_examples = domain_hints.get("examples")
                 if isinstance(hint_examples, list):
-                    valid_examples = [str(v).strip() for v in hint_examples if str(v).strip()]
+                    valid_examples = [str(v).strip() for v in hint_examples[:3] if str(v).strip()]
                     if valid_examples:
-                        lines.append(f"  - domain intent examples: {valid_examples[0]}")
+                        lines.append(f"  - domain intent examples: {'; '.join(valid_examples)}")
 
             capabilities = domain_payload.get("capabilities")
             if not isinstance(capabilities, list):
@@ -822,9 +845,9 @@ class IntentAdapter:
                             lines.append(f"    - intent keywords: {', '.join(valid_keywords[:8])}")
                     hint_examples = intent_hints.get("examples")
                     if isinstance(hint_examples, list):
-                        valid_examples = [str(v).strip() for v in hint_examples if str(v).strip()]
+                        valid_examples = [str(v).strip() for v in hint_examples[:3] if str(v).strip()]
                         if valid_examples:
-                            lines.append(f"    - intent examples: {valid_examples[0]}")
+                            lines.append(f"    - intent examples: {'; '.join(valid_examples)}")
 
                 param_specs = self._parameter_specs_for_capability(domain=domain, capability=cap_name)
                 for idx, (param_name, spec) in enumerate(sorted(param_specs.items()), start=1):
@@ -912,6 +935,18 @@ class IntentAdapter:
             lines.append(f"- {domain}.{action}{confidence_txt}: {description}")
             metadata = item.get("metadata")
             if isinstance(metadata, dict):
+                intent_hints = metadata.get("intent_hints")
+                if isinstance(intent_hints, dict):
+                    hint_keywords = intent_hints.get("keywords")
+                    if isinstance(hint_keywords, list):
+                        valid_keywords = [str(v).strip() for v in hint_keywords if str(v).strip()]
+                        if valid_keywords:
+                            lines.append(f"  - intent keywords: {', '.join(valid_keywords[:6])}")
+                    hint_examples = intent_hints.get("examples")
+                    if isinstance(hint_examples, list):
+                        valid_examples = [str(v).strip() for v in hint_examples[:2] if str(v).strip()]
+                        if valid_examples:
+                            lines.append(f"  - intent examples: {'; '.join(valid_examples)}")
                 specs = metadata.get("parameter_specs")
                 if isinstance(specs, dict):
                     for idx, (param_name, spec) in enumerate(sorted(specs.items()), start=1):
@@ -922,7 +957,9 @@ class IntentAdapter:
                             continue
                         ptype = str(spec.get("type", "any")).strip() or "any"
                         req = "required" if bool(spec.get("required")) else "optional"
-                        lines.append(f"  - param '{param_name}' ({ptype}, {req})")
+                        examples = spec.get("examples") if isinstance(spec.get("examples"), list) else []
+                        example_text = f" ex: {examples[0]}" if examples else ""
+                        lines.append(f"  - param '{param_name}' ({ptype}, {req}){example_text}")
         return "\n".join(lines)
 
     def _build_system_prompt(self) -> str:
