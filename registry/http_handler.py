@@ -82,3 +82,21 @@ class HttpDomainHandler:
         except Exception as e:
             logger.error("Failed to fetch manifest from %s: %s", url, e)
             raise
+
+    def fetch_openapi(self) -> dict[str, Any]:
+        """
+        Fetch OpenAPI schema via GET /openapi.json.
+        """
+        url = f"{self.base_url}/openapi.json"
+        try:
+            logger.info("Fetching OpenAPI from: %s", url)
+            with httpx.Client(timeout=self.timeout) as client:
+                response = client.get(url, headers=self.headers)
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("OpenAPI payload must be an object")
+                return payload
+        except Exception as e:
+            logger.error("Failed to fetch OpenAPI from %s: %s", url, e)
+            raise

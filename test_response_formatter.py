@@ -33,6 +33,33 @@ def test_format_domain_output_dag_with_notification():
     assert "Mensagem enviada no Telegram." in text
 
 
+def test_format_domain_output_dag_multi_steps_with_arbitrary_keys():
+    out = DomainOutput(
+        status="success",
+        result={
+            "steps": {
+                "foo": {
+                    "step_id": 10,
+                    "status": "success",
+                    "capability": "get_stock_price",
+                    "result": {"symbol": "VALE3.SA", "price": 61.0199, "currency": "BRL", "date": "2026-02-13"},
+                },
+                "bar": {
+                    "step_id": 20,
+                    "status": "success",
+                    "capability": "get_stock_price",
+                    "result": {"symbol": "PETR4.SA", "price": 36.8899, "currency": "BRL", "date": "2026-02-13"},
+                },
+            }
+        },
+        explanation="Executed 2 task(s).",
+    )
+    text = format_domain_output(out)
+    assert "VALE3.SA: 61.02 BRL (2026-02-13)" in text
+    assert "PETR4.SA: 36.89 BRL (2026-02-13)" in text
+    assert "Concluído com sucesso." not in text
+
+
 def test_format_domain_output_failure_is_objective():
     out = DomainOutput(
         status="failure",

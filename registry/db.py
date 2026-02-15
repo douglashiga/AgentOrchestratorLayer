@@ -139,3 +139,24 @@ class RegistryDB:
             
             rows = conn.execute(query, params).fetchall()
             return [dict(r) for r in rows]
+
+    def delete_capabilities_except(self, domain_name: str, keep_names: list[str]) -> int:
+        """
+        Remove capabilities for a domain that are not present in keep_names.
+        Returns number of removed rows.
+        """
+        with self._get_conn() as conn:
+            domain = conn.execute("SELECT id FROM domains WHERE name = ?", (domain_name,)).fetchone()
+            if not domain:
+                return 0
+
+            domain_id = domain["id"]
+            cleaned = [str(name).strip() for name in keep_names if str(name).strip()]
+            if not cleaned:
+                cursor = conn.execute("DELETE FROM capabilities WHERE domain_id = ?", (domain_id,))
+                return int(cursor.rowcount or 0)
+
+            placeholders = ",".join(["?"] * len(cleaned))
+            query = f"DELETE FROM capabilities WHERE domain_id = ? AND name NOT IN ({placeholders})"
+            cursor = conn.execute(query, [domain_id, *cleaned])
+            return int(cursor.rowcount or 0)

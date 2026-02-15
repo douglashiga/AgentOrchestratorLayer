@@ -79,6 +79,27 @@ def health_check():
 # This enriches the raw MCP tools with Orchestrator-specific UI/Logic hints.
 METADATA_OVERRIDES = {
     "get_stock_price": {
+        "intent_description": (
+            "Get current stock price/quote for one or more symbols. "
+            "Use for price questions such as 'qual o preço', 'cotação', 'quanto está', and ticker/company mentions."
+        ),
+        "intent_hints": {
+            "keywords": [
+                "qual o preco",
+                "qual o preço",
+                "cotacao",
+                "cotação",
+                "quanto está",
+                "quanto esta",
+                "valor da acao",
+                "price",
+                "stock price",
+            ],
+            "examples": [
+                "qual o preco da petro?",
+                "cotação da vale3 hoje",
+            ],
+        },
         "explanation_template": "{symbol} is trading at {result[price]} {currency}.",
         "parameter_specs": {
             "currency": {
@@ -137,17 +158,131 @@ METADATA_OVERRIDES = {
         "explanation_template": "Stock screener results for {result[market]} market."
     },
     "get_top_gainers": {
+        "intent_description": (
+            "List top gainers for a market/period. Use for ranking/momentum queries such as "
+            "'maiores altas', 'top gainers', 'ações que mais subiram', including Bovespa/IBOV context."
+        ),
+        "intent_hints": {
+            "keywords": [
+                "maiores altas",
+                "top gainers",
+                "ações que mais subiram",
+                "acoes que mais subiram",
+                "bovespa",
+                "ibovespa",
+                "ibov",
+                "mais altas",
+            ],
+            "examples": [
+                "quais as maiores altas de hoje do bovespa?",
+                "top gainers no brasil hoje",
+            ],
+        },
         "market_required": True,
         "default_market": "SE",
         "default_period": "1d",
         "valid_values": {"market": ["US", "BR", "SE"], "period": ["1d", "5d", "1mo", "3mo", "1y"]},
+        "parameter_specs": {
+            "market": {
+                "type": "string",
+                "required": True,
+                "examples": ["BR", "US", "SE"],
+                "normalization": {"case": "upper"},
+                "aliases": {
+                    "BOVESPA": "BR",
+                    "IBOVESPA": "BR",
+                    "IBOV": "BR",
+                    "B3": "BR",
+                    "BRASIL": "BR",
+                    "BRAZIL": "BR",
+                    "NYSE": "US",
+                    "NASDAQ": "US",
+                    "EUA": "US",
+                    "USA": "US",
+                    "SUECIA": "SE",
+                    "SUÉCIA": "SE",
+                    "SWEDEN": "SE",
+                    "STOCKHOLM": "SE",
+                },
+            },
+            "period": {
+                "type": "string",
+                "default": "1d",
+                "examples": ["1d", "5d", "1mo"],
+                "aliases": {
+                    "HOJE": "1d",
+                    "TODAY": "1d",
+                    "SEMANA": "5d",
+                    "MÊS": "1mo",
+                    "MES": "1mo",
+                    "ANO": "1y",
+                },
+            },
+        },
         "explanation_template": "Top gainers in {result[market]} for {result[period]}."
     },
     "get_top_losers": {
+        "intent_description": (
+            "List top losers for a market/period. Use for ranking/momentum queries such as "
+            "'maiores baixas', 'top losers', 'ações que mais caíram', including Bovespa/IBOV context."
+        ),
+        "intent_hints": {
+            "keywords": [
+                "maiores baixas",
+                "top losers",
+                "ações que mais caíram",
+                "acoes que mais cairam",
+                "bovespa",
+                "ibovespa",
+                "ibov",
+                "mais baixas",
+            ],
+            "examples": [
+                "quais as maiores baixas de hoje do bovespa?",
+                "top losers no brasil hoje",
+            ],
+        },
         "market_required": True,
         "default_market": "SE",
         "default_period": "1d",
         "valid_values": {"market": ["US", "BR", "SE"], "period": ["1d", "5d", "1mo", "3mo", "1y"]},
+        "parameter_specs": {
+            "market": {
+                "type": "string",
+                "required": True,
+                "examples": ["BR", "US", "SE"],
+                "normalization": {"case": "upper"},
+                "aliases": {
+                    "BOVESPA": "BR",
+                    "IBOVESPA": "BR",
+                    "IBOV": "BR",
+                    "B3": "BR",
+                    "BRASIL": "BR",
+                    "BRAZIL": "BR",
+                    "NYSE": "US",
+                    "NASDAQ": "US",
+                    "EUA": "US",
+                    "USA": "US",
+                    "SUECIA": "SE",
+                    "SUÉCIA": "SE",
+                    "SWEDEN": "SE",
+                    "STOCKHOLM": "SE",
+                },
+            },
+            "period": {
+                "type": "string",
+                "default": "1d",
+                "examples": ["1d", "5d", "1mo"],
+                "aliases": {
+                    "HOJE": "1d",
+                    "TODAY": "1d",
+                    "SEMANA": "5d",
+                    "MÊS": "1mo",
+                    "MES": "1mo",
+                    "ANO": "1y",
+                },
+            },
+        },
         "explanation_template": "Top losers in {result[market]} for {result[period]}."
     },
     "get_top_dividend_payers": {
@@ -250,9 +385,14 @@ def get_manifest():
             },
         )
         
+        description_override = overrides.get("intent_description")
+        description = str(description_override).strip() if isinstance(description_override, str) else ""
+        if not description:
+            description = tool["description"]
+
         capabilities.append({
             "name": name,
-            "description": tool["description"],
+            "description": description,
             "schema": tool["schema"], # Raw JSON Schema from MCP
             "metadata": merged_metadata
         })

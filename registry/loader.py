@@ -10,6 +10,7 @@ Responsibility:
 import logging
 import json
 import os
+import re
 from typing import Any
 
 from registry.db import RegistryDB
@@ -184,9 +185,27 @@ class RegistryLoader:
                 except Exception as e:
                     logger.warning("Manifest sync error for '%s': %s", name, e)
 
+    def sync_all_remote_capabilities(self) -> None:
+        """
+        Refresh capabilities for all enabled remote_http domains currently in RegistryDB.
+        Source priority per domain: manifest -> OpenAPI.
+        """
+        domains = self.db.list_domains()
+        for domain in domains:
+            name = str(domain.get("name", "")).strip()
+            domain_type = str(domain.get("type", "")).strip()
+            if not name or domain_type != "remote_http":
+                continue
+            self.sync_capabilities(name)
+
     def sync_capabilities(self, domain_name: str) -> bool:
         """
-        Connect to remote domain, fetch manifest, and update DB.
+        Connect to remote domain, fetch capabilities, and update DB.
+        Source priority:
+        1) GET /manifest
+        2) GET /openapi.json (fallback)
+
+        DB state for that domain is reconciled to the fetched capability list.
         Only works for 'remote_http' domains.
         """
         domain_conf = self.db.get_domain(domain_name)
@@ -205,17 +224,25 @@ class RegistryLoader:
                 auth_token=config.get("auth_token"),
                 timeout=config.get("timeout", 10.0)
             )
-            manifest = handler.fetch_manifest()
-            
-            # Validate domain name match? Optional.
-            # remote_domain = manifest.get("domain")
-            
-            capabilities = manifest.get("capabilities", [])
+            source = "manifest"
+            try:
+                manifest = handler.fetch_manifest()
+            except Exception:
+                source = "openapi"
+                openapi_spec = handler.fetch_openapi()
+                manifest = self._manifest_from_openapi(domain_name=domain_name, openapi_spec=openapi_spec)
+
+            capabilities = manifest.get("capabilities", []) if isinstance(manifest, dict) else []
+            if not isinstance(capabilities, list):
+                capabilities = []
+
+            registered_names: list[str] = []
             for cap in capabilities:
                 cap_name = str(cap.get("name") or cap.get("capability") or "").strip()
                 if not cap_name:
                     logger.warning("Skipping manifest capability without name: %s", cap)
                     continue
+                registered_names.append(cap_name)
                 raw_schema = cap.get("schema")
                 if not isinstance(raw_schema, dict):
                     raw_schema = {}
@@ -236,13 +263,97 @@ class RegistryLoader:
                     schema=raw_schema,
                     metadata=normalized_metadata,
                 )
-            
-            logger.info("Synced %d capabilities for domain %s (including metadata)", len(capabilities), domain_name)
+
+            removed = self.db.delete_capabilities_except(domain_name=domain_name, keep_names=registered_names)
+            logger.info(
+                "Synced %d capabilities for domain %s via %s (removed %d stale entries)",
+                len(registered_names),
+                domain_name,
+                source,
+                removed,
+            )
             return True
             
         except Exception as e:
             logger.error("Failed to sync capabilities for %s: %s", domain_name, e)
             return False
+
+    def _manifest_from_openapi(self, *, domain_name: str, openapi_spec: dict[str, Any]) -> dict[str, Any]:
+        """
+        Build a manifest-like payload from OpenAPI operations.
+        Expected output:
+        {
+          "domain": "<name>",
+          "capabilities": [{"name": "...", "description": "...", "schema": {...}, "metadata": {...}}]
+        }
+        """
+        paths = openapi_spec.get("paths")
+        if not isinstance(paths, dict):
+            return {"domain": domain_name, "capabilities": []}
+
+        infra_paths = {"/health", "/manifest", "/openapi.json", "/docs", "/redoc", "/execute"}
+        seen: set[str] = set()
+        capabilities: list[dict[str, Any]] = []
+
+        for path in sorted(paths.keys()):
+            if path in infra_paths:
+                continue
+            path_item = paths.get(path)
+            if not isinstance(path_item, dict):
+                continue
+
+            for method in ("get", "post", "put", "patch", "delete"):
+                operation = path_item.get(method)
+                if not isinstance(operation, dict):
+                    continue
+
+                operation_id = str(operation.get("operationId", "")).strip()
+                if operation_id:
+                    capability_name = operation_id
+                else:
+                    slug = re.sub(r"[^a-z0-9_]+", "_", path.lower()).strip("_")
+                    capability_name = f"{method}_{slug}" if slug else method
+
+                capability_name = re.sub(r"__+", "_", capability_name).strip("_")
+                if not capability_name or capability_name in seen:
+                    continue
+                seen.add(capability_name)
+
+                summary = str(operation.get("summary", "")).strip()
+                description = str(operation.get("description", "")).strip()
+                resolved_description = summary or description or f"{method.upper()} {path}"
+
+                request_schema: dict[str, Any] = {}
+                request_body = operation.get("requestBody")
+                if isinstance(request_body, dict):
+                    content = request_body.get("content")
+                    if isinstance(content, dict):
+                        for content_type in ("application/json", "application/*+json"):
+                            body_meta = content.get(content_type)
+                            if not isinstance(body_meta, dict):
+                                continue
+                            schema = body_meta.get("schema")
+                            if isinstance(schema, dict):
+                                request_schema = schema
+                                break
+
+                capabilities.append(
+                    {
+                        "name": capability_name,
+                        "description": resolved_description,
+                        "schema": request_schema,
+                        "metadata": {
+                            "source": "openapi",
+                            "path": path,
+                            "method": method.upper(),
+                        },
+                    }
+                )
+
+        return {
+            "domain": domain_name,
+            "capabilities": capabilities,
+        }
 
     def _normalize_capability_metadata(
         self,

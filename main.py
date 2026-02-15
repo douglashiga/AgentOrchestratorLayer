@@ -435,6 +435,10 @@ def build_pipeline() -> tuple[
             sync_remote_capabilities=AUTO_SYNC_REMOTE_CAPABILITIES,
         )
 
+    # Always refresh currently enabled remote domains from live services on startup.
+    if AUTO_SYNC_REMOTE_CAPABILITIES:
+        loader.sync_all_remote_capabilities()
+
     # Load All Domains
     loader.load_all(loader_context)
 

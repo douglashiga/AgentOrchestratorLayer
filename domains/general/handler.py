@@ -71,13 +71,23 @@ class GeneralDomainHandler:
             )
         except Exception as e:
             logger.error("General domain error: %s", e)
+            fallback_text = self._fallback_response(user_message)
             return DomainOutput(
-                status="failure",
-                result={},
-                explanation="Failed to generate response.",
-                confidence=0.0,
+                status="success",
+                result={"response": fallback_text},
+                explanation=fallback_text,
+                confidence=0.5,
                 metadata={"error": str(e)}
             )
+
+    def _fallback_response(self, user_message: str) -> str:
+        question = (user_message or "").strip()
+        if question:
+            return (
+                "Estou com instabilidade no chat geral agora. "
+                "Tente novamente em instantes, ou reformule sua pergunta em modo objetivo."
+            )
+        return "Estou com instabilidade no chat geral agora. Tente novamente em instantes."
 
     def _build_capability_listing(self) -> str:
         """Build deterministic domain/capability listing from runtime registry data."""

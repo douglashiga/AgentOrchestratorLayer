@@ -49,24 +49,61 @@ def _format_dag_result(result: dict[str, Any]) -> str | None:
     if not isinstance(steps, dict):
         return None
 
-    lines: list[str] = []
-    primary = steps.get("primary", {})
-    if isinstance(primary, dict):
-        primary_result = primary.get("result", {})
-        if isinstance(primary_result, dict):
-            price_line = _format_price_line(primary_result)
-            if price_line:
-                lines.append(price_line)
-        primary_explanation = str(primary.get("explanation", "")).strip()
-        if not lines and primary_explanation:
-            lines.append(_round_numbers_in_text(primary_explanation))
+    def _ordered_steps(step_map: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+        indexed: list[tuple[int, str, dict[str, Any]]] = []
+        unindexed: list[tuple[str, dict[str, Any]]] = []
+        for key, payload in step_map.items():
+            if not isinstance(payload, dict):
+                continue
+            step_id = payload.get("step_id")
+            if isinstance(step_id, int):
+                indexed.append((step_id, key, payload))
+            else:
+                unindexed.append((key, payload))
+        indexed.sort(key=lambda item: (item[0], item[1]))
+        unindexed.sort(key=lambda item: item[0])
+        return [(key, payload) for _, key, payload in indexed] + unindexed
 
-    notification = steps.get("notification")
-    if isinstance(notification, dict):
-        if str(notification.get("status", "")).strip() == "success":
-            lines.append("Mensagem enviada no Telegram.")
-        elif str(notification.get("status", "")).strip() == "failure":
-            lines.append("Falha ao enviar no Telegram.")
+    ordered_steps = _ordered_steps(steps)
+    lines: list[str] = []
+    for _step_key, step_payload in ordered_steps:
+        step_result = step_payload.get("result", {})
+        if isinstance(step_result, dict):
+            price_line = _format_price_line(step_result)
+            if price_line and price_line not in lines:
+                lines.append(price_line)
+
+    if not lines:
+        primary = steps.get("primary")
+        if isinstance(primary, dict):
+            primary_explanation = str(primary.get("explanation", "")).strip()
+            if primary_explanation:
+                lines.append(_round_numbers_in_text(primary_explanation))
+        if not lines:
+            for _step_key, step_payload in ordered_steps:
+                step_explanation = str(step_payload.get("explanation", "")).strip()
+                if step_explanation:
+                    lines.append(_round_numbers_in_text(step_explanation))
+                    break
+
+    telegram_status: str | None = None
+    for step_key, step_payload in ordered_steps:
+        capability = str(step_payload.get("capability", "")).strip().lower()
+        key_l = str(step_key).strip().lower()
+        status = str(step_payload.get("status", "")).strip().lower()
+        if key_l in {"notification", "notifier"} and status in {"success", "failure"}:
+            telegram_status = status
+            break
+        if capability not in {"send_telegram_message", "send_telegram_group_message"}:
+            continue
+        if status in {"success", "failure"}:
+            telegram_status = status
+            break
+
+    if telegram_status == "success":
+        lines.append("Mensagem enviada no Telegram.")
+    elif telegram_status == "failure":
+        lines.append("Falha ao enviar no Telegram.")
 
     return "\n".join(line for line in lines if line).strip() or None
 

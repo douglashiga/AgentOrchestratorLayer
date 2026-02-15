@@ -37,6 +37,7 @@ from shared.workflow_contracts import (
 logger = logging.getLogger(__name__)
 
 WorkflowHandler = Callable[..., Any]
+ProgressCallback = Callable[[dict[str, Any]], Any]
 
 
 @dataclass
@@ -71,7 +72,12 @@ class ExecutionEngine:
             except Exception as exc:
                 logger.warning("Failed to close TaskStateStore: %s", exc)
 
-    async def execute_plan(self, plan: ExecutionPlan, original_intent: IntentOutput) -> DomainOutput:
+    async def execute_plan(
+        self,
+        plan: ExecutionPlan,
+        original_intent: IntentOutput,
+        progress_callback: ProgressCallback | None = None,
+    ) -> DomainOutput:
         """Execute the plan step-by-step."""
         logger.info("Execution Engine started: %d steps", len(plan.steps))
         steps_by_id = {step.id: step for step in plan.steps}
@@ -105,7 +111,15 @@ class ExecutionEngine:
             logger.info("Executing batch: %s", [s.id for s in batch])
 
             results = await asyncio.gather(
-                *(self._execute_step(step, outputs, original_intent) for step in batch)
+                *(
+                    self._execute_step(
+                        step,
+                        outputs,
+                        original_intent,
+                        progress_callback=progress_callback,
+                    )
+                    for step in batch
+                )
             )
 
             must_stop = False
@@ -308,11 +322,23 @@ class ExecutionEngine:
         step: ExecutionStep,
         previous_outputs: dict[int, DomainOutput],
         original_intent: IntentOutput,
+        progress_callback: ProgressCallback | None = None,
     ) -> tuple[int, DomainOutput]:
         """Execute a single step with parameter interpolation."""
         logger.info("Executing Step %d: %s (%s)", step.id, step.capability, step.domain or original_intent.domain)
         try:
             resolved_params = self._resolve_placeholders(step.params, previous_outputs)
+            await self._emit_progress(
+                progress_callback=progress_callback,
+                payload={
+                    "type": "step_started",
+                    "step_id": step.id,
+                    "domain": step.domain or original_intent.domain,
+                    "capability": step.capability,
+                    "params": self._json_safe(resolved_params),
+                    "depends_on": list(step.depends_on),
+                },
+            )
             step_intent = IntentOutput(
                 domain=step.domain or original_intent.domain,
                 capability=step.capability,
@@ -328,6 +354,18 @@ class ExecutionEngine:
                     method_spec=method_spec,
                     task_id=f"step-{step.id}-{uuid.uuid4().hex[:8]}",
                 )
+                await self._emit_progress(
+                    progress_callback=progress_callback,
+                    payload={
+                        "type": "step_completed",
+                        "step_id": step.id,
+                        "domain": step.domain or original_intent.domain,
+                        "capability": step.capability,
+                        "status": output.status,
+                        "result": self._json_safe(output.result),
+                        "explanation": str(output.explanation or ""),
+                    },
+                )
                 return step.id, output
 
             if step.timeout_seconds and step.timeout_seconds > 0:
@@ -337,9 +375,33 @@ class ExecutionEngine:
                 )
             else:
                 output = await self.orchestrator.process(step_intent)
+            await self._emit_progress(
+                progress_callback=progress_callback,
+                payload={
+                    "type": "step_completed",
+                    "step_id": step.id,
+                    "domain": step.domain or original_intent.domain,
+                    "capability": step.capability,
+                    "status": output.status,
+                    "result": self._json_safe(output.result),
+                    "explanation": str(output.explanation or ""),
+                },
+            )
             return step.id, output
         except Exception as e:
             logger.critical("Engine crash on Step %d: %s", step.id, e)
+            await self._emit_progress(
+                progress_callback=progress_callback,
+                payload={
+                    "type": "step_completed",
+                    "step_id": step.id,
+                    "domain": step.domain or original_intent.domain,
+                    "capability": step.capability,
+                    "status": "failure",
+                    "result": {},
+                    "explanation": f"Execution Engine crashed at step {step.id}: {e}",
+                },
+            )
             return step.id, DomainOutput(
                 status="failure",
                 result={},
@@ -347,6 +409,21 @@ class ExecutionEngine:
                 confidence=0.0,
                 metadata={"error": str(e)},
             )
+
+    async def _emit_progress(
+        self,
+        *,
+        progress_callback: ProgressCallback | None,
+        payload: dict[str, Any],
+    ) -> None:
+        if progress_callback is None:
+            return
+        try:
+            maybe_result = progress_callback(self._json_safe(payload))
+            if inspect.isawaitable(maybe_result):
+                await maybe_result
+        except Exception as exc:
+            logger.warning("Failed to emit execution progress callback: %s", exc)
 
     async def _run_method_workflow(
         self,

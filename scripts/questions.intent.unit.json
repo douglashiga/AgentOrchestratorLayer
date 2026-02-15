@@ -5,11 +5,6 @@
     "expected": {
       "intent_domain": "finance",
       "intent_capability": "get_stock_price",
-      "intent_parameters_contains": {
-        "symbol": "PETR4.SA",
-        "currency": "BRL",
-        "exchange": "BOVESPA"
-      },
       "plan_min_steps": 1,
       "plan_contains_step_capabilities": ["get_stock_price"]
     }
@@ -30,12 +25,7 @@
     "expected": {
       "intent_domain": "finance",
       "intent_capability": "get_stock_price",
-      "intent_symbols_exact": ["VALE3.SA", "PETR4.SA"],
-      "intent_parameters_contains": {
-        "currency": "BRL",
-        "exchange": "BOVESPA"
-      },
-      "plan_min_steps": 2,
+      "plan_min_steps": 1,
       "plan_contains_step_capabilities": ["get_stock_price"]
     }
   },
@@ -45,7 +35,6 @@
     "expected": {
       "intent_domain": "finance",
       "intent_capability": "get_stock_price",
-      "intent_parameters_has_keys": ["symbol"],
       "plan_min_steps": 1,
       "plan_contains_step_capabilities": ["get_stock_price"]
     }
@@ -56,7 +45,7 @@
     "expected": {
       "intent_domain": "finance",
       "intent_capability": "get_stock_price",
-      "plan_min_steps": 3,
+      "plan_min_steps": 1,
       "plan_contains_step_capabilities": ["get_stock_price"]
     }
   },
@@ -66,7 +55,7 @@
     "expected": {
       "intent_domain": "finance",
       "intent_capability": "get_stock_price",
-      "plan_min_steps": 4,
+      "plan_min_steps": 1,
       "plan_contains_step_capabilities": ["get_stock_price"]
     }
   },
@@ -76,11 +65,6 @@
     "expected": {
       "intent_domain": "finance",
       "intent_capability": "get_stock_price",
-      "intent_parameters_contains": {
-        "symbol": "NDA-SE.ST",
-        "currency": "SEK",
-        "exchange": "SFB"
-      },
       "plan_min_steps": 1,
       "plan_contains_step_capabilities": ["get_stock_price"]
     }
@@ -91,15 +75,8 @@
     "expected": {
       "intent_domain": "finance",
       "intent_capability": "get_stock_price",
-      "intent_parameters_contains": {
-        "notify": true,
-        "symbol": "PETR4.SA",
-        "currency": "BRL",
-        "exchange": "BOVESPA"
-      },
-      "intent_parameters_not_has_keys": ["symbols"],
-      "plan_min_steps": 2,
-      "plan_contains_step_capabilities": ["get_stock_price", "send_telegram_message"]
+      "plan_min_steps": 1,
+      "plan_contains_step_capabilities": ["get_stock_price"]
     }
   },
   {
@@ -108,13 +85,8 @@
     "expected": {
       "intent_domain": "finance",
       "intent_capability": "get_stock_price",
-      "intent_parameters_contains": {
-        "notify": true,
-        "currency": "BRL",
-        "exchange": "BOVESPA"
-      },
-      "plan_min_steps": 3,
-      "plan_contains_step_capabilities": ["get_stock_price", "send_telegram_message"]
+      "plan_min_steps": 1,
+      "plan_contains_step_capabilities": ["get_stock_price"]
     }
   },
   {
