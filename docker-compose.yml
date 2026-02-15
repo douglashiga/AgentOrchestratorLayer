@@ -5,10 +5,11 @@ services:
     environment:
       - MCP_URL=${MCP_URL:-http://host.docker.internal:8000/sse}
       - PYTHONPATH=/app
+      - REGISTRY_DB_PATH=/app/data/registry.db
     ports:
       - "8003:8001"
     volumes:
-      - ./registry.db:/app/registry.db
+      - agent-api-data:/app/data
     command: python domains/finance/server.py
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -80,9 +81,9 @@ services:
       - INTENT_MODEL_NAME=${INTENT_MODEL_NAME:-}
       - ORCHESTRATOR_CLARIFICATION_MODEL=${ORCHESTRATOR_CLARIFICATION_MODEL:-}
       - GENERAL_MODEL_NAME=${GENERAL_MODEL_NAME:-}
-      - REGISTRY_DB_PATH=/app/registry.db
-      - DB_PATH=/app/agent.db
-      - MEMORY_DB_PATH=/app/memory.db
+      - REGISTRY_DB_PATH=/app/data/registry.db
+      - DB_PATH=/app/data/agent.db
+      - MEMORY_DB_PATH=/app/data/memory.db
       - MCP_URL=${MCP_URL:-http://host.docker.internal:8000/sse}
       - BOOTSTRAP_DOMAINS_FILE=/app/domains.bootstrap.json
       - AUTO_SYNC_REMOTE_CAPABILITIES=true
@@ -102,8 +103,7 @@ services:
       - OPENAI_API_SUGGESTIONS_IN_CONTENT=${OPENAI_API_SUGGESTIONS_IN_CONTENT:-false}
       - OPENAI_API_SUGGESTION_ACTIONS_IN_CONTENT=${OPENAI_API_SUGGESTION_ACTIONS_IN_CONTENT:-false}
     volumes:
-      - ./registry.db:/app/registry.db
-      - ./agent.db:/app/agent.db
+      - agent-api-data:/app/data
       - ./domains.bootstrap.json:/app/domains.bootstrap.json:ro
     depends_on:
       - finance-server
@@ -156,4 +156,5 @@ networks:
 
 volumes:
   db-data:
+  agent-api-data:
   open-webui-data:
