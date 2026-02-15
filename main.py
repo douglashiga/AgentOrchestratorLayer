@@ -11,6 +11,7 @@ import sys
 import os
 import asyncio
 import re
+import time
 import unicodedata
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -216,6 +217,17 @@ def _is_yes(text: str) -> bool:
 
 def _is_no(text: str) -> bool:
     return text.strip().lower() in {"nao", "não", "n", "no", "cancelar", "cancela"}
+
+
+def _is_cancel(text: str) -> bool:
+    """Check if user wants to cancel any pending state and start fresh."""
+    return text.strip().lower() in {
+        "cancelar", "cancela", "cancel",
+        "sair", "exit", "quit",
+        "recomeçar", "recomecar", "restart",
+        "novo", "nova", "new",
+        "parar", "para", "stop",
+    }
 
 
 def _looks_like_chat_id(value: str) -> bool:
@@ -1182,6 +1194,17 @@ async def run_telegram_loop() -> None:
     mcp_adapter: MCPAdapter | None = None
     pending_confirmation_by_session: dict[str, Any] = {}
     pending_workflow_by_session: dict[str, dict[str, str]] = {}
+    pending_state_timestamp: dict[str, float] = {}  # session_id → timestamp
+
+    PENDING_STATE_TIMEOUT_SECONDS = float(os.getenv("PENDING_STATE_TIMEOUT_SECONDS", "300"))  # 5 min
+
+    def _clear_pending_state(sid: str) -> None:
+        pending_confirmation_by_session.pop(sid, None)
+        pending_workflow_by_session.pop(sid, None)
+        pending_state_timestamp.pop(sid, None)
+
+    def _set_pending_timestamp(sid: str) -> None:
+        pending_state_timestamp[sid] = time.time()
 
     if not TELEGRAM_BOT_TOKEN:
         console.print("[bold red]TELEGRAM_BOT_TOKEN is not configured.[/]")
@@ -1243,16 +1266,33 @@ async def run_telegram_loop() -> None:
                         entry_request.model_dump(mode="json"),
                     )
                     history = conversation.get_history(entry_request.session_id)
+
+                    # Auto-expire stale pending states.
+                    _state_ts = pending_state_timestamp.get(entry_request.session_id)
+                    if _state_ts is not None and (time.time() - _state_ts) > PENDING_STATE_TIMEOUT_SECONDS:
+                        logger.info("Pending state expired for session %s", entry_request.session_id)
+                        _clear_pending_state(entry_request.session_id)
+
                     pending_intent = pending_confirmation_by_session.get(entry_request.session_id)
                     pending_workflow = pending_workflow_by_session.get(entry_request.session_id)
 
                     if pending_workflow and pending_intent is None:
                         answer_value = entry_request.input_text.strip()
+
+                        # Allow user to cancel/escape workflow clarification.
+                        if _is_cancel(answer_value) or _is_no(answer_value):
+                            _clear_pending_state(entry_request.session_id)
+                            msg = "Ok, workflow cancelado. Pode fazer uma nova pergunta."
+                            conversation.save(entry_request.session_id, "user", entry_request.input_text)
+                            conversation.save(entry_request.session_id, "assistant", msg)
+                            await telegram_entry.send_message(chat_id, msg)
+                            continue
+
                         resume_answer = ClarificationAnswer(
                             question_id=pending_workflow["question_id"],
                             task_id=pending_workflow["task_id"],
                             selected_option=answer_value,
-                            confirmed=not _is_no(answer_value),
+                            confirmed=True,
                         )
                         output = await engine.resume_task(resume_answer)
                         await _send_telegram_debug_json(
@@ -1270,10 +1310,11 @@ async def run_telegram_loop() -> None:
                                     "task_id": next_task_id,
                                     "question_id": next_question_id,
                                 }
+                                _set_pending_timestamp(entry_request.session_id)
                             else:
-                                pending_workflow_by_session.pop(entry_request.session_id, None)
+                                _clear_pending_state(entry_request.session_id)
                         else:
-                            pending_workflow_by_session.pop(entry_request.session_id, None)
+                            _clear_pending_state(entry_request.session_id)
 
                         conversation.save(entry_request.session_id, "user", entry_request.input_text)
                         response_text = format_domain_output(output, channel="telegram")
@@ -1281,10 +1322,11 @@ async def run_telegram_loop() -> None:
                         await telegram_entry.send_message(chat_id, response_text)
                         continue
 
+                    intent = None
                     if pending_intent is not None:
                         if _is_yes(entry_request.input_text):
                             intent = pending_intent.model_copy(update={"confidence": 1.0})
-                            pending_confirmation_by_session.pop(entry_request.session_id, None)
+                            _clear_pending_state(entry_request.session_id)
                             await telegram_entry.send_message(chat_id, "Confirmado. Executando...")
                             await _send_telegram_debug_json(
                                 telegram_entry,
@@ -1292,32 +1334,31 @@ async def run_telegram_loop() -> None:
                                 "confirmation_result",
                                 {"confirmed": True, "intent": intent.model_dump(mode="json")},
                             )
-                        elif _is_no(entry_request.input_text):
-                            pending_confirmation_by_session.pop(entry_request.session_id, None)
-                            msg = "Perfeito. Me diga novamente como deseja executar."
+                        elif _is_no(entry_request.input_text) or _is_cancel(entry_request.input_text):
+                            _clear_pending_state(entry_request.session_id)
+                            msg = "Ok, cancelado. Pode fazer uma nova pergunta."
                             conversation.save(entry_request.session_id, "user", entry_request.input_text)
                             conversation.save(entry_request.session_id, "assistant", msg)
                             await _send_telegram_debug_json(
                                 telegram_entry,
                                 chat_id,
                                 "confirmation_result",
-                                {"confirmed": False, "reason": "user_declined"},
+                                {"confirmed": False, "reason": "user_cancelled"},
                             )
                             await telegram_entry.send_message(chat_id, msg)
                             continue
                         else:
-                            msg = "Responda apenas 'sim' ou 'não' para confirmar."
-                            conversation.save(entry_request.session_id, "user", entry_request.input_text)
-                            conversation.save(entry_request.session_id, "assistant", msg)
+                            # Non-yes/no text: cancel confirmation and treat as new query.
+                            _clear_pending_state(entry_request.session_id)
                             await _send_telegram_debug_json(
                                 telegram_entry,
                                 chat_id,
                                 "confirmation_result",
-                                {"confirmed": None, "reason": "invalid_confirmation_text"},
+                                {"confirmed": None, "reason": "new_query_replaces_confirmation"},
                             )
-                            await telegram_entry.send_message(chat_id, msg)
-                            continue
-                    else:
+                            # Fall through to intent extraction below.
+
+                    if intent is None:
                         intent = intent_adapter.extract(
                             entry_request.input_text,
                             history,
@@ -1344,6 +1385,7 @@ async def run_telegram_loop() -> None:
                         if _should_soft_confirm(intent):
                             question = _build_soft_confirmation_message(intent, engine.orchestrator.domain_registry)
                             pending_confirmation_by_session[entry_request.session_id] = intent
+                            _set_pending_timestamp(entry_request.session_id)
                             conversation.save(entry_request.session_id, "user", entry_request.input_text)
                             conversation.save(entry_request.session_id, "assistant", question)
                             await _send_telegram_debug_json(
@@ -1381,8 +1423,9 @@ async def run_telegram_loop() -> None:
                                 "task_id": task_id,
                                 "question_id": question_id,
                             }
+                            _set_pending_timestamp(entry_request.session_id)
                     else:
-                        pending_workflow_by_session.pop(entry_request.session_id, None)
+                        _clear_pending_state(entry_request.session_id)
 
                     conversation.save(entry_request.session_id, "user", entry_request.input_text)
                     if output.status in ("success", "clarification"):
@@ -1483,11 +1526,22 @@ async def run_agent_loop() -> None:
 
                 if pending_workflow is not None and pending_confirmation_intent is None:
                     answer_text = entry_request.input_text.strip()
+
+                    # Allow user to cancel/escape workflow clarification.
+                    if _is_cancel(answer_text) or _is_no(answer_text):
+                        pending_workflow = None
+                        msg = "Ok, workflow cancelado. Pode fazer uma nova pergunta."
+                        console.print(Panel(Text(msg, style="bold yellow"), title="Cancelled", border_style="yellow", box=box.ROUNDED))
+                        conversation.save(entry_request.session_id, "user", entry_request.input_text)
+                        conversation.save(entry_request.session_id, "assistant", msg)
+                        console.print()
+                        continue
+
                     resume_answer = ClarificationAnswer(
                         question_id=pending_workflow["question_id"],
                         task_id=pending_workflow["task_id"],
                         selected_option=answer_text,
-                        confirmed=not _is_no(answer_text),
+                        confirmed=True,
                     )
                     with console.status("[green]Resuming workflow...[/green]", spinner="dots"):
                         output = await engine.resume_task(resume_answer)
@@ -1519,27 +1573,27 @@ async def run_agent_loop() -> None:
                     continue
 
                 # Handle one-shot confirmation flow first.
+                intent = None
                 if pending_confirmation_intent is not None:
                     if _is_yes(entry_request.input_text):
                         intent = pending_confirmation_intent.model_copy(update={"confidence": 1.0})
                         pending_confirmation_intent = None
                         console.print("[dim]Confirmação recebida. Executando...[/dim]")
-                    elif _is_no(entry_request.input_text):
+                    elif _is_no(entry_request.input_text) or _is_cancel(entry_request.input_text):
                         pending_confirmation_intent = None
-                        msg = "Perfeito. Me diga novamente como deseja executar."
-                        console.print(Panel(Text(msg, style="bold yellow"), title="❓ Confirmation", border_style="yellow", box=box.ROUNDED))
+                        msg = "Ok, cancelado. Pode fazer uma nova pergunta."
+                        console.print(Panel(Text(msg, style="bold yellow"), title="Cancelled", border_style="yellow", box=box.ROUNDED))
                         conversation.save(entry_request.session_id, "user", entry_request.input_text)
                         conversation.save(entry_request.session_id, "assistant", msg)
                         console.print()
                         continue
                     else:
-                        msg = "Responda apenas 'sim' ou 'não' para confirmar."
-                        console.print(Panel(Text(msg, style="bold yellow"), title="❓ Confirmation", border_style="yellow", box=box.ROUNDED))
-                        conversation.save(entry_request.session_id, "user", entry_request.input_text)
-                        conversation.save(entry_request.session_id, "assistant", msg)
-                        console.print()
-                        continue
-                else:
+                        # Non-yes/no text: treat as a brand-new query instead of looping.
+                        pending_confirmation_intent = None
+                        console.print("[dim]Confirmação anterior cancelada. Processando nova pergunta...[/dim]")
+                        # Fall through to intent extraction below.
+
+                if intent is None:
                     # Step 3: Intent Adapter — extract intent (LLM)
                     with console.status("[yellow]Thinking...[/yellow]", spinner="dots"):
                         try:
