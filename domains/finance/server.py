@@ -290,6 +290,15 @@ METADATA_OVERRIDES = {
                 },
             },
         },
+        "decomposition": {
+            "array_params": [
+                {
+                    "param_name": "symbols",
+                    "single_param_name": "symbol",
+                    "max_concurrency": 4,
+                }
+            ]
+        },
         "flow": SYMBOL_SEARCH_FLOW,
     },
     "get_historical_data": {
@@ -582,6 +591,15 @@ METADATA_OVERRIDES = {
         },
         "explanation_template": "Fundamental comparison.",
         "flow": SYMBOL_LIST_SEARCH_FLOW,
+        "decomposition": {
+            "array_params": [
+                {
+                    "param_name": "symbols",
+                    "single_param_name": "symbol",
+                    "max_concurrency": 4,
+                }
+            ]
+        },
     },
     "list_jobs": {
         "intent_description": "List available data pipeline jobs.",
