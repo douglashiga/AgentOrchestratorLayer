@@ -38,11 +38,26 @@ class FinanceDomainHandler:
         self.strategy_core = StrategyCore()
         self.skill_gateway = skill_gateway
         self.registry = registry
+        # Keep symbol_aliases in sync with finance/server.py SYMBOL_ALIASES
         self.symbol_aliases: dict[str, str] = {
             "PETRO": "PETR4.SA",
+            "PETRO4": "PETR4.SA",
             "PETROBRAS": "PETR4.SA",
             "VALE": "VALE3.SA",
+            "ITAU": "ITUB4.SA",
+            "ITAU UNIBANCO": "ITUB4.SA",
+            "BBAS": "BBAS3.SA",
+            "BANCO DO BRASIL": "BBAS3.SA",
+            "MGLU": "MGLU3.SA",
+            "MAGAZINE LUIZA": "MGLU3.SA",
+            "BBDC": "BBDC4.SA",
+            "BRADESCO": "BBDC4.SA",
+            "AAPL": "AAPL",
+            "TSLA": "TSLA",
+            "MSFT": "MSFT",
+            "NVDA": "NVDA",
             "NORDEA": "NDA-SE.ST",
+            "TELIA": "TELIA.ST",
         }
 
     async def execute(self, intent: IntentOutput) -> DomainOutput:
@@ -642,7 +657,25 @@ class FinanceDomainHandler:
         for token in plain_tokens:
             if token in stopwords:
                 continue
-            if token not in seen:
+            # Try to resolve token as an alias first (e.g., TELIA -> TELIA.ST)
+            # This prevents duplicate symbols like TELIA and TELIA.ST
+            aliased = self._resolve_symbol_alias(token)
+            if aliased:
+                # We have an alias (either already seen or new)
+                if aliased not in seen:
+                    found_symbols.append(aliased)
+                    seen.add(aliased)
+                # If already in seen, skip it (avoid duplicates)
+                continue
+
+            # No alias found, try canonical normalization
+            # (e.g., PETR4 -> PETR4.SA, or keep as-is for unknown)
+            normalized = self._normalize_canonical_symbol(token)
+            if normalized and normalized not in seen:
+                found_symbols.append(normalized)
+                seen.add(normalized)
+            elif token not in seen:
+                # Last resort: keep token as-is if not already seen
                 found_symbols.append(token)
                 seen.add(token)
 

@@ -117,6 +117,7 @@ SYMBOL_ALIASES = {
     "MSFT": "MSFT",
     "NVDA": "NVDA",
     "NORDEA": "NDA-SE.ST",
+    "TELIA": "TELIA.ST",
 }
 
 RANKING_PERIOD_ALIASES = {

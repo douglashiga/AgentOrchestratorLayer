@@ -70,7 +70,9 @@ def test_symbol_resolution_returns_clarification_when_lookup_fails():
         }
     )
     handler = FinanceDomainHandler(skill_gateway=gateway, registry=None)
-    out = handler._resolve_symbol_value("PETRO4", step={"search_capability": "search_symbol"})
+    # Note: PETRO4 is now resolved via alias to PETR4.SA without calling the gateway
+    # So we use an unknown symbol that won't have an alias
+    out = handler._resolve_symbol_value("UNKNOWNSYM123", step={"search_capability": "search_symbol"})
     assert getattr(out, "status", "") == "clarification"
 
 
@@ -201,12 +203,13 @@ def test_operational_error_is_mapped_to_clarification():
 def test_infer_multiple_symbols_from_query_text():
     """Test extraction of multiple symbols from a single query."""
     handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None)
-    
+
     # Test 3-symbol query: PETR4, vale3 (lowercase), and itau (plain token)
+    # Note: ITAU is resolved to ITUB4.SA via alias, not kept as ITAU
     symbols = handler._infer_symbols_from_query_text("qual o valor da PETR4 vale3 e itau?")
     assert "PETR4.SA" in symbols
     assert "VALE3.SA" in symbols
-    assert "ITAU" in symbols
+    assert "ITUB4.SA" in symbols  # ITAU alias maps to ITUB4.SA
     assert len(symbols) == 3
 
 
@@ -224,14 +227,14 @@ def test_infer_multiple_symbols_returns_list():
 def test_infer_symbols_filters_stopwords():
     """Test that stopwords are filtered from symbol extraction."""
     handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None)
-    
+
     # "COMPARE", "VALOR", "QUAL" should be filtered out
     symbols = handler._infer_symbols_from_query_text("compare petr4, vale3, itau e bradesco")
     assert "COMPARE" not in symbols
     assert "PETR4.SA" in symbols
     assert "VALE3.SA" in symbols
-    assert "ITAU" in symbols
-    assert "BRADESCO" in symbols
+    assert "ITUB4.SA" in symbols  # ITAU alias maps to ITUB4.SA
+    assert "BBDC4.SA" in symbols  # BRADESCO alias maps to BBDC4.SA
 
 
 def test_flow_resolve_symbol_list_infers_from_query():
