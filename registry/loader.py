@@ -124,6 +124,11 @@ class RegistryLoader:
             metadata={
                 "explanation_template": "{result[response]}",
                 "planner_available": False,
+                "domain_description": "General-purpose assistant interactions.",
+                "domain_intent_hints": {
+                    "keywords": ["oi", "olá", "hello", "ajuda", "help", "conversar"],
+                    "examples": ["oi", "me ajuda com isso"],
+                },
             },
         )
         self.db.register_capability(
@@ -134,6 +139,11 @@ class RegistryLoader:
             metadata={
                 "explanation_template": "{result[response]}",
                 "planner_available": False,
+                "domain_description": "General-purpose assistant interactions.",
+                "domain_intent_hints": {
+                    "keywords": ["o que voce faz", "what can you do", "listar capacidades"],
+                    "examples": ["quais capacidades voce tem?"],
+                },
             },
         )
 
@@ -235,6 +245,13 @@ class RegistryLoader:
             capabilities = manifest.get("capabilities", []) if isinstance(manifest, dict) else []
             if not isinstance(capabilities, list):
                 capabilities = []
+            domain_description = ""
+            domain_intent_hints: dict[str, Any] = {}
+            if isinstance(manifest, dict):
+                domain_description = str(manifest.get("domain_description", "")).strip()
+                raw_domain_hints = manifest.get("domain_intent_hints")
+                if isinstance(raw_domain_hints, dict):
+                    domain_intent_hints = raw_domain_hints
 
             registered_names: list[str] = []
             for cap in capabilities:
@@ -249,6 +266,10 @@ class RegistryLoader:
                 raw_metadata = cap.get("metadata")
                 if not isinstance(raw_metadata, dict):
                     raw_metadata = {}
+                if domain_description:
+                    raw_metadata.setdefault("domain_description", domain_description)
+                if domain_intent_hints:
+                    raw_metadata.setdefault("domain_intent_hints", domain_intent_hints)
                 normalized_metadata = self._normalize_capability_metadata(
                     domain_name=domain_name,
                     capability_name=cap_name,
@@ -290,6 +311,14 @@ class RegistryLoader:
         paths = openapi_spec.get("paths")
         if not isinstance(paths, dict):
             return {"domain": domain_name, "capabilities": []}
+
+        info = openapi_spec.get("info")
+        domain_description = ""
+        if isinstance(info, dict):
+            domain_description = str(info.get("description", "")).strip()
+
+        raw_domain_hints = openapi_spec.get("x-domain-intent-hints")
+        domain_intent_hints = raw_domain_hints if isinstance(raw_domain_hints, dict) else {}
 
         infra_paths = {"/health", "/manifest", "/openapi.json", "/docs", "/redoc", "/execute"}
         seen: set[str] = set()
@@ -352,6 +381,8 @@ class RegistryLoader:
 
         return {
             "domain": domain_name,
+            "domain_description": domain_description,
+            "domain_intent_hints": domain_intent_hints,
             "capabilities": capabilities,
         }
 

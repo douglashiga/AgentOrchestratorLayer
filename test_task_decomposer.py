@@ -204,3 +204,38 @@ def test_multi_symbol_notify_adds_notifier_followup_when_catalog_supports_it() -
     assert plan.steps[1].capability == "get_stock_price"
     assert plan.steps[2].capability == "send_telegram_message"
     assert plan.steps[2].depends_on == [1, 2]
+
+
+def test_decomposer_prefers_execution_steps_hint_from_intent_parameters() -> None:
+    decomposer = TaskDecomposer(capability_catalog=[])
+    intent = IntentOutput(
+        domain="finance",
+        capability="get_stock_price",
+        confidence=1.0,
+        parameters={
+            "symbol": "PETR4.SA",
+            "_execution_steps": [
+                {
+                    "domain": "finance",
+                    "capability": "get_stock_price",
+                    "params": {"symbol": "PETR4.SA"},
+                    "required": True,
+                },
+                {
+                    "domain": "communication",
+                    "capability": "send_telegram_message",
+                    "params": {"message": "${1.explanation}"},
+                    "depends_on": [1],
+                    "required": False,
+                },
+            ],
+        },
+        original_query="qual o valor da petr4 e envie no telegram",
+    )
+
+    plan = decomposer.decompose(intent)
+    assert plan.execution_mode == "dag"
+    assert len(plan.steps) == 2
+    assert plan.steps[0].capability == "get_stock_price"
+    assert plan.steps[1].capability == "send_telegram_message"
+    assert plan.steps[1].depends_on == [1]

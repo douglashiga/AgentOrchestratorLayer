@@ -792,7 +792,17 @@ def _format_progress_event_json(event: dict[str, Any], event_type: str) -> str:
 
     if event_type in {"step_started", "step_completed", "resume_completed"}:
         compact: dict[str, Any] = {"type": event_type}
-        for key in ("step_id", "domain", "capability", "status", "params", "result", "explanation"):
+        for key in (
+            "step_id",
+            "domain",
+            "capability",
+            "status",
+            "confidence",
+            "intent_confidence",
+            "params",
+            "result",
+            "explanation",
+        ):
             if key in event:
                 compact[key] = event.get(key)
         if event_type == "step_completed":
@@ -808,8 +818,12 @@ def _format_progress_event_human(event: dict[str, Any], event_type: str) -> str:
         domain = str(intent.get("domain", "")).strip() or "unknown"
         capability = str(intent.get("capability", "")).strip() or "unknown"
         params = _inline_fields(intent.get("parameters"), max_items=5)
+        conf_raw = intent.get("confidence")
+        conf_text = ""
+        if isinstance(conf_raw, (int, float)):
+            conf_text = f" | conf={float(conf_raw):.2f}"
         label = "Intent extraido" if event_type == "intent_extracted" else "Intent normalizado"
-        suffix = f" | params: {params}" if params else ""
+        suffix = f"{conf_text} | params: {params}" if params else conf_text
         return f"[progress] {label}: {domain}.{capability}{suffix}\n"
 
     if event_type == "plan_generated":
@@ -835,7 +849,9 @@ def _format_progress_event_human(event: dict[str, Any], event_type: str) -> str:
         domain = str(event.get("domain", "")).strip() or "unknown"
         capability = str(event.get("capability", "")).strip() or "unknown"
         params = _inline_fields(event.get("params"), max_items=5)
-        suffix = f" | params: {params}" if params else ""
+        conf = event.get("confidence")
+        conf_text = f" | conf={float(conf):.2f}" if isinstance(conf, (int, float)) else ""
+        suffix = f"{conf_text} | params: {params}" if params else conf_text
         return f"[step] Iniciando step {step_id}: {domain}.{capability}{suffix}\n"
 
     if event_type == "step_completed":
@@ -845,7 +861,13 @@ def _format_progress_event_human(event: dict[str, Any], event_type: str) -> str:
         status = str(event.get("status", "")).strip() or "unknown"
         explanation = _compact_text(event.get("explanation"), max_chars=120)
         result = _summarize_progress_result(event.get("result"))
+        conf = event.get("confidence")
+        intent_conf = event.get("intent_confidence")
         details: list[str] = []
+        if isinstance(conf, (int, float)):
+            details.append(f"conf={float(conf):.2f}")
+        if isinstance(intent_conf, (int, float)):
+            details.append(f"intent_conf={float(intent_conf):.2f}")
         if result:
             details.append(f"result: {result}")
         if explanation:
@@ -1189,6 +1211,7 @@ async def _run_agent_turn(
             "intent": {
                 "domain": intent_extracted.get("domain"),
                 "capability": intent_extracted.get("capability"),
+                "confidence": intent_extracted.get("confidence"),
                 "parameters": intent_extracted.get("parameters", {}),
             },
         },
@@ -1202,6 +1225,7 @@ async def _run_agent_turn(
             "intent": {
                 "domain": intent_normalized.get("domain"),
                 "capability": intent_normalized.get("capability"),
+                "confidence": intent_normalized.get("confidence"),
                 "parameters": intent_normalized.get("parameters", {}),
             },
         },

@@ -26,6 +26,10 @@ class TaskDecomposer:
 
     def decompose(self, intent: IntentOutput) -> ExecutionPlan:
         """Decompose intent into 1..N execution steps."""
+        hinted_plan = self._plan_from_execution_steps_hint(intent)
+        if hinted_plan is not None:
+            return hinted_plan
+
         source_entry = self._find_capability_entry(intent.domain, intent.capability)
         source_meta = self._metadata_of(source_entry)
 
@@ -118,7 +122,7 @@ class TaskDecomposer:
         )
 
     def _build_primary_step(self, intent: IntentOutput) -> ExecutionStep:
-        params = dict(intent.parameters)
+        params = self._runtime_parameters(intent.parameters)
         if not params.get("symbol"):
             symbols = params.get("symbols")
             if isinstance(symbols, list) and symbols:
@@ -136,11 +140,76 @@ class TaskDecomposer:
             output_key="primary",
         )
 
+    def _runtime_parameters(self, params: dict[str, Any] | None) -> dict[str, Any]:
+        source = params if isinstance(params, dict) else {}
+        return {
+            str(key): value
+            for key, value in source.items()
+            if str(key) and not str(key).startswith("_")
+        }
+
     def _single_step_plan(self, primary_step: ExecutionStep) -> ExecutionPlan:
         return ExecutionPlan(
             execution_mode="sequential",
             combine_mode="last",
             steps=[primary_step],
+        )
+
+    def _plan_from_execution_steps_hint(self, intent: IntentOutput) -> ExecutionPlan | None:
+        params = intent.parameters if isinstance(intent.parameters, dict) else {}
+        raw_steps = params.get("_execution_steps")
+        if not isinstance(raw_steps, list) or not raw_steps:
+            return None
+
+        default_params = self._runtime_parameters(intent.parameters)
+        steps: list[ExecutionStep] = []
+        for idx, raw in enumerate(raw_steps, start=1):
+            if not isinstance(raw, dict):
+                continue
+            capability = str(raw.get("capability", "")).strip()
+            if not capability:
+                continue
+            domain = str(raw.get("domain", "")).strip() or intent.domain
+            raw_step_params = raw.get("params")
+            if isinstance(raw_step_params, dict):
+                step_params = self._runtime_parameters(raw_step_params)
+            else:
+                step_params = {}
+            if idx == 1 and not step_params:
+                step_params = dict(default_params)
+            depends_on = raw.get("depends_on")
+            if isinstance(depends_on, list) and depends_on:
+                parsed_depends = [int(item) for item in depends_on if isinstance(item, int)]
+            else:
+                parsed_depends = [steps[-1].id] if steps else []
+
+            output_key = raw.get("output_key")
+            output_key_str = str(output_key).strip() if output_key is not None else None
+            if output_key_str == "":
+                output_key_str = None
+
+            steps.append(
+                ExecutionStep(
+                    id=idx,
+                    domain=domain,
+                    capability=capability,
+                    params=step_params,
+                    depends_on=parsed_depends,
+                    required=bool(raw.get("required", True)),
+                    output_key=output_key_str,
+                )
+            )
+
+        if not steps:
+            return None
+
+        execution_mode = "sequential" if len(steps) == 1 else "dag"
+        combine_mode = "last" if len(steps) == 1 else "report"
+        return ExecutionPlan(
+            execution_mode=execution_mode,
+            combine_mode=combine_mode,
+            max_concurrency=min(4, max(1, len(steps))),
+            steps=steps,
         )
 
     def _find_capability_entry(self, domain: str, capability: str) -> dict[str, Any] | None:
@@ -233,7 +302,7 @@ class TaskDecomposer:
 
         shared_params = {
             key: value
-            for key, value in (intent.parameters or {}).items()
+            for key, value in self._runtime_parameters(intent.parameters).items()
             if key not in {"symbol", "symbols"}
         }
         steps: list[ExecutionStep] = []

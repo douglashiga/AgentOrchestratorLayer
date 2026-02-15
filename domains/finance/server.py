@@ -399,6 +399,29 @@ def get_manifest():
 
     return {
         "domain": "finance",
+        "domain_description": "Market and financial data queries for stocks, rankings, fundamentals, options, and pipelines.",
+        "domain_intent_hints": {
+            "keywords": [
+                "acao",
+                "ações",
+                "ticker",
+                "preco",
+                "preço",
+                "cotacao",
+                "cotação",
+                "bolsa",
+                "bovespa",
+                "ibov",
+                "mercado",
+                "fundamentos",
+                "dividendos",
+            ],
+            "examples": [
+                "qual o valor da petr4?",
+                "quais as maiores altas do bovespa hoje?",
+                "compare os fundamentos de vale3 e petr4",
+            ],
+        },
         "capabilities": capabilities
     }
 

@@ -83,6 +83,21 @@ def manifest() -> dict[str, Any]:
         "manifest_version": "1.0",
         "domain": DOMAIN_NAME,
         "domain_description": "Send notifications and operational messages via Telegram.",
+        "domain_intent_hints": {
+            "keywords": [
+                "telegram",
+                "envie",
+                "manda",
+                "notifique",
+                "compartilhe",
+                "grupo",
+                "canal",
+            ],
+            "examples": [
+                "envie no telegram",
+                "manda essa resposta no grupo",
+            ],
+        },
         "capabilities": [
             {
                 "name": "send_telegram_message",

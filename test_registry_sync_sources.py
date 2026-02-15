@@ -22,6 +22,11 @@ def test_sync_capabilities_uses_manifest_and_reconciles_stale_rows(monkeypatch, 
         def fetch_manifest(self):
             return {
                 "domain": "finance",
+                "domain_description": "Market and financial data.",
+                "domain_intent_hints": {
+                    "keywords": ["preco", "cotacao", "bolsa"],
+                    "examples": ["qual o valor da petr4?"],
+                },
                 "capabilities": [
                     {
                         "name": "get_stock_price",
@@ -43,6 +48,10 @@ def test_sync_capabilities_uses_manifest_and_reconciles_stale_rows(monkeypatch, 
     caps = db.list_capabilities("finance")
     names = sorted(str(item.get("capability", "")) for item in caps)
     assert names == ["get_stock_price"]
+    metadata = json.loads(str(caps[0].get("metadata", "{}")))
+    assert metadata.get("domain_description") == "Market and financial data."
+    assert isinstance(metadata.get("domain_intent_hints"), dict)
+    assert "preco" in metadata.get("domain_intent_hints", {}).get("keywords", [])
 
 
 def test_sync_capabilities_falls_back_to_openapi_when_manifest_fails(monkeypatch, tmp_path) -> None:

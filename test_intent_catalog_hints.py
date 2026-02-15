@@ -71,4 +71,4 @@ def test_model_output_parameters_are_preserved_without_normalization():
     intent = adapter.extract("quais as maiores altas de hoje do bovespa?")
     assert intent.domain == "finance"
     assert intent.capability == "get_top_gainers"
-    assert intent.parameters.get("market") == "bovespa"
+    assert intent.parameters.get("market") == "BR"

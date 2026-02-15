@@ -11,9 +11,12 @@ import sys
 import os
 import asyncio
 import re
+import unicodedata
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -42,6 +45,9 @@ from shared.workflow_contracts import ClarificationAnswer
 # ─── Configuration ──────────────────────────────────────────────
 
 logger = logging.getLogger(__name__)
+
+# Ensure local .env is loaded before reading runtime configuration.
+load_dotenv(override=False)
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_INTENT_MODEL = os.getenv("OLLAMA_INTENT_MODEL", "llama3.1:8b")
@@ -73,6 +79,9 @@ SOFT_CONFIRMATION_ENABLED = os.getenv("SOFT_CONFIRMATION_ENABLED", "true").strip
     "on",
 )
 SOFT_CONFIRM_THRESHOLD = float(os.getenv("SOFT_CONFIRM_THRESHOLD", "0.94"))
+ORCHESTRATOR_CONFIDENCE_THRESHOLD = float(
+    os.getenv("ORCHESTRATOR_CONFIDENCE_THRESHOLD", str(SOFT_CONFIRM_THRESHOLD))
+)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_ENTRY_POLL_TIMEOUT_SECONDS = int(os.getenv("TELEGRAM_ENTRY_POLL_TIMEOUT_SECONDS", "20"))
 TELEGRAM_ENTRY_REQUEST_TIMEOUT_SECONDS = float(os.getenv("TELEGRAM_ENTRY_REQUEST_TIMEOUT_SECONDS", "35"))
@@ -88,6 +97,12 @@ TELEGRAM_ENTRY_DEBUG = os.getenv("TELEGRAM_ENTRY_DEBUG", "false").strip().lower(
     "on",
 )
 TELEGRAM_ENTRY_DEBUG_MAX_CHARS = int(os.getenv("TELEGRAM_ENTRY_DEBUG_MAX_CHARS", "3200"))
+INTENT_FORCE_DOMAIN_ROUTING = os.getenv("INTENT_FORCE_DOMAIN_ROUTING", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 # ─── Rich Console ───────────────────────────────────────────────
 
@@ -207,38 +222,433 @@ def _looks_like_chat_id(value: str) -> bool:
     return bool(re.fullmatch(r"-?\d+", value.strip()))
 
 
-def _extract_message_candidate(query: str) -> str | None:
-    q = query.strip()
-    patterns = [
-        r"(?:dizendo|fala(?:ndo)?|mensagem)\s+(.+)$",
-        r"(?:saying|message)\s+(.+)$",
-    ]
-    for pattern in patterns:
-        m = re.search(pattern, q, re.IGNORECASE)
-        if m:
-            candidate = m.group(1).strip().strip("\"'")
-            if candidate:
-                return candidate
+def _normalize_text(text: str) -> str:
+    raw = (text or "").strip().lower()
+    if not raw:
+        return ""
+    normalized = unicodedata.normalize("NFKD", raw)
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"\s+", " ", ascii_only).strip()
+
+
+def _tokenize_text(text: str) -> list[str]:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return []
+    return re.findall(r"[a-z0-9]+", normalized)
+
+
+def _token_similarity(left: str, right: str) -> float:
+    if not left or not right:
+        return 0.0
+    if left == right:
+        return 1.0
+    return SequenceMatcher(None, left, right).ratio()
+
+
+def _hint_match_score(query_norm: str, query_tokens: list[str], hint_text: str) -> float:
+    hint_norm = _normalize_text(hint_text)
+    if not hint_norm:
+        return 0.0
+    score = 0.0
+    if hint_norm in query_norm:
+        score += 5.0
+    hint_tokens = [token for token in _tokenize_text(hint_norm) if len(token) >= 3]
+    if not hint_tokens or not query_tokens:
+        return score
+
+    matched = 0.0
+    for hint_token in hint_tokens:
+        best = max((_token_similarity(hint_token, query_token) for query_token in query_tokens), default=0.0)
+        if best >= 0.86:
+            matched += 1.0
+        elif best >= 0.75 and len(hint_token) >= 5:
+            matched += 0.5
+
+    coverage = matched / max(1, len(hint_tokens))
+    score += coverage * 3.0
+    if coverage >= 0.8 and len(hint_tokens) >= 2:
+        score += 1.0
+    return score
+
+
+def _is_notifier_capability(metadata: dict[str, Any]) -> bool:
+    composition_meta = metadata.get("composition")
+    if not isinstance(composition_meta, dict):
+        return False
+    return str(composition_meta.get("role", "")).strip().lower() == "notifier"
+
+
+def _capability_hints(capability: str, metadata: dict[str, Any]) -> list[str]:
+    hints: list[str] = []
+    cap_hint = str(capability).replace("_", " ").strip()
+    if cap_hint:
+        hints.append(cap_hint)
+
+    domain_description = str(metadata.get("domain_description", "")).strip()
+    if domain_description:
+        hints.append(domain_description)
+
+    description = str(metadata.get("description", "")).strip()
+    if description:
+        hints.append(description)
+
+    domain_hints = metadata.get("domain_intent_hints")
+    if isinstance(domain_hints, dict):
+        for key in ("keywords", "examples"):
+            values = domain_hints.get(key)
+            if isinstance(values, list):
+                for value in values:
+                    text = str(value).strip()
+                    if text:
+                        hints.append(text)
+
+    intent_hints = metadata.get("intent_hints")
+    if isinstance(intent_hints, dict):
+        for key in ("keywords", "examples"):
+            values = intent_hints.get(key)
+            if isinstance(values, list):
+                for value in values:
+                    text = str(value).strip()
+                    if text:
+                        hints.append(text)
+    return hints
+
+
+def _capability_intent_score(
+    query_norm: str,
+    query_tokens: list[str],
+    capability: str,
+    metadata: dict[str, Any],
+) -> float:
+    score = 0.0
+    for hint in _capability_hints(capability=capability, metadata=metadata):
+        score = max(score, _hint_match_score(query_norm, query_tokens, hint))
+    return score
+
+
+def _intent_match_min_score(force_domain_routing: bool) -> float:
+    return 1.0 if force_domain_routing else 3.5
+
+
+def _looks_like_notify_request(
+    query: str,
+    registry: HandlerRegistry | None,
+    *,
+    force_domain_routing: bool = False,
+) -> bool:
+    if registry is None:
+        return False
+
+    query_norm = _normalize_text(query)
+    query_tokens = _tokenize_text(query)
+    if not query_norm or not query_tokens:
+        return False
+
+    best_score = 0.0
+    for capability in registry.registered_capabilities:
+        metadata = registry.get_metadata(capability)
+        if not isinstance(metadata, dict) or not _is_notifier_capability(metadata):
+            continue
+        score = _capability_intent_score(
+            query_norm=query_norm,
+            query_tokens=query_tokens,
+            capability=capability,
+            metadata=metadata,
+        )
+        best_score = max(best_score, score)
+
+    return best_score >= _intent_match_min_score(force_domain_routing)
+
+
+def _reroute_general_chat_from_registry(intent, registry, params: dict[str, Any], force_domain_routing: bool = False):
+    if registry is None:
+        return None
+    query = intent.original_query or ""
+    query_norm = _normalize_text(query)
+    query_tokens = _tokenize_text(query)
+    if not query_norm or not query_tokens:
+        return None
+    best: tuple[float, str, str, dict[str, Any]] | None = None
+    for capability in registry.registered_capabilities:
+        metadata = registry.get_metadata(capability) if registry else {}
+        if not isinstance(metadata, dict):
+            continue
+        domain = str(metadata.get("domain", "")).strip()
+        if not domain or domain == "general":
+            continue
+
+        if _is_notifier_capability(metadata):
+            continue
+
+        score = _capability_intent_score(
+            query_norm=query_norm,
+            query_tokens=query_tokens,
+            capability=capability,
+            metadata=metadata,
+        )
+        if score <= 0:
+            continue
+        if best is None or score > best[0]:
+            best = (score, domain, capability, metadata)
+
+    if best is None:
+        return None
+
+    score, domain, capability, metadata = best
+    min_score = _intent_match_min_score(force_domain_routing)
+    if score < min_score:
+        return None
+
+    rerouted_params: dict[str, Any] = {}
+    parameter_specs = metadata.get("parameter_specs")
+    if isinstance(parameter_specs, dict):
+        query_norm = _normalize_text(query)
+        for param_name, spec in parameter_specs.items():
+            if not isinstance(spec, dict):
+                continue
+            aliases = spec.get("aliases")
+            if not isinstance(aliases, dict):
+                continue
+            for alias_raw, value in aliases.items():
+                alias = _normalize_text(str(alias_raw))
+                if alias and re.search(rf"\b{re.escape(alias)}\b", query_norm):
+                    rerouted_params[str(param_name)] = value
+                    break
+
+    if params.get("notify") is True or _looks_like_notify_request(
+        query,
+        registry,
+        force_domain_routing=force_domain_routing,
+    ):
+        rerouted_params["notify"] = True
+
+    confidence_floor = 0.85
+    if force_domain_routing:
+        confidence_floor = min(0.75, 0.5 + (max(0.0, score) * 0.06))
+
+    return intent.model_copy(
+        update={
+            "domain": domain,
+            "capability": capability,
+            "parameters": rerouted_params,
+            "confidence": max(float(intent.confidence), confidence_floor),
+        }
+    )
+
+
+def _normalize_parameter_value(value: Any, spec: dict[str, Any]) -> Any:
+    if isinstance(value, list):
+        item_spec = spec.get("items") if isinstance(spec.get("items"), dict) else spec
+        return [_normalize_parameter_value(item, item_spec) for item in value]
+
+    if not isinstance(value, str):
+        return value
+
+    text = value.strip()
+    if not text:
+        return text
+
+    aliases = spec.get("aliases")
+    if isinstance(aliases, dict):
+        direct = aliases.get(text)
+        if direct is None:
+            direct = aliases.get(text.upper())
+        if direct is None:
+            direct = aliases.get(text.lower())
+        if direct is None:
+            text_norm = _normalize_text(text)
+            for alias_key, alias_value in aliases.items():
+                if _normalize_text(str(alias_key)) == text_norm:
+                    direct = alias_value
+                    break
+        if direct is not None:
+            return direct
+
+    normalization = spec.get("normalization")
+    if isinstance(normalization, dict):
+        case_mode = str(normalization.get("case", "")).strip().lower()
+        if case_mode == "upper":
+            text = text.upper()
+        elif case_mode == "lower":
+            text = text.lower()
+        suffix = normalization.get("suffix")
+        if isinstance(suffix, str) and suffix.strip():
+            suffix_value = suffix.strip()
+            if not text.upper().endswith(suffix_value.upper()):
+                text = f"{text}{suffix_value}"
+
+    enum = spec.get("enum")
+    if isinstance(enum, list):
+        for item in enum:
+            if str(item).strip().lower() == text.lower():
+                text = item
+                break
+
+    type_name = str(spec.get("type", "")).strip().lower()
+    if type_name in {"boolean", "bool"}:
+        lowered = text.lower()
+        if lowered in {"true", "1", "yes", "y", "sim", "s", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "n", "nao", "não", "off"}:
+            return False
+    if type_name in {"integer", "int"}:
+        try:
+            return int(text)
+        except Exception:
+            return value
+    if type_name in {"number", "float"}:
+        try:
+            return float(text)
+        except Exception:
+            return value
+
+    return text
+
+
+def _infer_value_from_symbol_suffix(params: dict[str, Any], spec: dict[str, Any]) -> Any:
+    infer_map = spec.get("infer_from_symbol_suffix")
+    if not isinstance(infer_map, dict):
+        return None
+
+    symbol_value: str | None = None
+    raw_symbol = params.get("symbol")
+    if isinstance(raw_symbol, str) and raw_symbol.strip():
+        symbol_value = raw_symbol.strip().upper()
+    else:
+        raw_symbols = params.get("symbols")
+        if isinstance(raw_symbols, list):
+            for item in raw_symbols:
+                if isinstance(item, str) and item.strip():
+                    symbol_value = item.strip().upper()
+                    break
+
+    if not symbol_value:
+        return None
+
+    for suffix_raw, inferred in infer_map.items():
+        suffix = str(suffix_raw).strip().upper()
+        if not suffix:
+            continue
+        if symbol_value.endswith(suffix):
+            return inferred
     return None
 
 
-def _looks_like_notify_request(query: str) -> bool:
-    text = (query or "").strip().lower()
-    if not text:
+def _apply_parameter_contracts(params: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
+    parameter_specs = metadata.get("parameter_specs")
+    if not isinstance(parameter_specs, dict):
+        return params
+
+    normalized = dict(params)
+    for param_name, spec in parameter_specs.items():
+        if not isinstance(spec, dict):
+            continue
+        key = str(param_name).strip()
+        if not key:
+            continue
+        value = normalized.get(key)
+        if value in (None, ""):
+            inferred = _infer_value_from_symbol_suffix(normalized, spec)
+            if inferred not in (None, ""):
+                normalized[key] = inferred
+                value = inferred
+            elif "default" in spec:
+                normalized[key] = spec.get("default")
+                value = normalized.get(key)
+        if value is None:
+            continue
+        normalized[key] = _normalize_parameter_value(value, spec)
+
+    return normalized
+
+
+def _required_parameter_names(metadata: dict[str, Any]) -> set[str]:
+    required: set[str] = set()
+    parameter_specs = metadata.get("parameter_specs")
+    if isinstance(parameter_specs, dict):
+        for param_name, spec in parameter_specs.items():
+            if not isinstance(spec, dict):
+                continue
+            if bool(spec.get("required")):
+                name = str(param_name).strip()
+                if name:
+                    required.add(name)
+
+    schema = metadata.get("schema")
+    if isinstance(schema, dict):
+        raw_required = schema.get("required")
+        if isinstance(raw_required, list):
+            for item in raw_required:
+                name = str(item).strip()
+                if name:
+                    required.add(name)
+    return required
+
+
+def _capability_declares_parameter(metadata: dict[str, Any], param_name: str) -> bool:
+    name = str(param_name).strip()
+    if not name:
         return False
-    keywords = (
-        "telegram",
-        "envie",
-        "enviar",
-        "manda",
-        "mandar",
-        "notifique",
-        "notificar",
-        "me avise",
-        "compartilhe",
-        "compartilhar",
-    )
-    return any(token in text for token in keywords)
+
+    parameter_specs = metadata.get("parameter_specs")
+    if isinstance(parameter_specs, dict) and name in parameter_specs:
+        return True
+
+    schema = metadata.get("schema")
+    if isinstance(schema, dict):
+        properties = schema.get("properties")
+        if isinstance(properties, dict) and name in properties:
+            return True
+    return False
+
+
+def _has_required_parameters(params: dict[str, Any], metadata: dict[str, Any]) -> bool:
+    required = _required_parameter_names(metadata)
+    if not required:
+        return False
+
+    for key in required:
+        value = params.get(key)
+        if value is None:
+            return False
+        if isinstance(value, str) and not value.strip():
+            return False
+        if isinstance(value, list) and len(value) == 0:
+            return False
+    return True
+
+
+def _can_resolve_required_params_via_flow(metadata: dict[str, Any]) -> bool:
+    required = _required_parameter_names(metadata)
+    if not required:
+        return False
+
+    flow = metadata.get("flow")
+    if isinstance(flow, str):
+        try:
+            flow = json.loads(flow)
+        except Exception:
+            flow = None
+    if not isinstance(flow, dict):
+        return False
+
+    pre_steps = flow.get("pre")
+    if not isinstance(pre_steps, list):
+        return False
+
+    resolvable: set[str] = set()
+    for step in pre_steps:
+        if not isinstance(step, dict):
+            continue
+        step_type = str(step.get("type", "")).strip().lower()
+        param_name = str(step.get("param", "")).strip()
+        if not step_type or not param_name:
+            continue
+        if step_type.startswith("resolve_"):
+            resolvable.add(param_name)
+
+    return required.issubset(resolvable)
 
 
 def _normalize_intent_parameters(intent, registry, entry_request: EntryRequest | None = None):
@@ -246,34 +656,50 @@ def _normalize_intent_parameters(intent, registry, entry_request: EntryRequest |
     params = dict(intent.parameters or {})
     capability = intent.capability
 
-    # Common aliases from LLM output drift.
-    alias_map = {
-        "stock_symbol": "symbol",
-        "ticker": "symbol",
-        "text": "message",
-        "group": "group_id",
-    }
-    for alias, canonical in alias_map.items():
-        if alias in params and canonical not in params:
-            params[canonical] = params[alias]
+    # Canonicalize intent domain when capability is registered with explicit domain metadata.
+    if registry is not None and registry.resolve_capability(capability) is not None:
+        cap_metadata = registry.get_metadata(capability)
+        if isinstance(cap_metadata, dict):
+            cap_domain = str(cap_metadata.get("domain", "")).strip()
+            if cap_domain and cap_domain != intent.domain:
+                intent = intent.model_copy(update={"domain": cap_domain})
 
-    if capability not in ("send_telegram_message", "send_telegram_group_message"):
-        if params.get("notify") is not True and _looks_like_notify_request(intent.original_query):
+    if intent.domain == "general" and capability == "chat":
+        rerouted = _reroute_general_chat_from_registry(
+            intent,
+            registry,
+            params,
+            force_domain_routing=INTENT_FORCE_DOMAIN_ROUTING,
+        )
+        if rerouted is not None:
+            intent = rerouted
+            params = dict(intent.parameters or {})
+            capability = intent.capability
+
+    metadata = registry.get_metadata(capability) if registry else {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    is_notifier_capability = _is_notifier_capability(metadata)
+    if not is_notifier_capability:
+        if params.get("notify") is not True and _looks_like_notify_request(
+            intent.original_query,
+            registry,
+            force_domain_routing=INTENT_FORCE_DOMAIN_ROUTING,
+        ):
             params["notify"] = True
 
-    # Communication fixes: message inference + chat_id normalization.
-    if capability in ("send_telegram_message", "send_telegram_group_message"):
-        if not params.get("message"):
-            inferred = _extract_message_candidate(intent.original_query)
-            if inferred:
-                params["message"] = inferred
-
+    # Communication fixes: chat target normalization for telegram capabilities.
+    if str(metadata.get("channel", "")).strip().lower() == "telegram":
         default_chat_id = os.getenv("TELEGRAM_DEFAULT_CHAT_ID", "").strip()
         source_chat_id = ""
         if entry_request and entry_request.metadata.get("source") == "telegram":
             source_chat_id = str(entry_request.metadata.get("chat_id", "")).strip()
 
-        if capability == "send_telegram_group_message":
+        has_group_id = _capability_declares_parameter(metadata, "group_id")
+        has_chat_id = _capability_declares_parameter(metadata, "chat_id")
+
+        if has_group_id:
             if not params.get("group_id") and params.get("chat_id"):
                 params["group_id"] = params.get("chat_id")
             if not params.get("group_id") and source_chat_id:
@@ -285,7 +711,7 @@ def _normalize_intent_parameters(intent, registry, entry_request: EntryRequest |
                     params["group_id"] = source_chat_id
                 elif default_chat_id:
                     params["group_id"] = default_chat_id
-        else:
+        if has_chat_id and not has_group_id:
             if not params.get("chat_id") and source_chat_id:
                 params["chat_id"] = source_chat_id
             if not params.get("chat_id") and default_chat_id:
@@ -297,16 +723,38 @@ def _normalize_intent_parameters(intent, registry, entry_request: EntryRequest |
                     params["chat_id"] = default_chat_id
 
     # Apply metadata defaults for missing/null params.
-    metadata = registry.get_metadata(capability) if registry else {}
     for key, value in metadata.items():
         if key.startswith("default_"):
             param_name = key.replace("default_", "")
             if param_name not in params or params[param_name] in (None, ""):
                 params[param_name] = value
 
+    params = _apply_parameter_contracts(params=params, metadata=metadata)
+
     confidence = float(intent.confidence)
+    if (
+        registry is not None
+        and intent.domain != "general"
+        and capability
+        and registry.resolve_capability(capability) is not None
+    ):
+        query_norm = _normalize_text(intent.original_query or "")
+        query_tokens = _tokenize_text(intent.original_query or "")
+        capability_score = _capability_intent_score(
+            query_norm=query_norm,
+            query_tokens=query_tokens,
+            capability=capability,
+            metadata=metadata,
+        )
+        min_intent_score = _intent_match_min_score(INTENT_FORCE_DOMAIN_ROUTING)
+
+        if _has_required_parameters(params, metadata):
+            confidence = max(confidence, ORCHESTRATOR_CONFIDENCE_THRESHOLD)
+        elif _can_resolve_required_params_via_flow(metadata) and capability_score >= min_intent_score:
+            confidence = max(confidence, ORCHESTRATOR_CONFIDENCE_THRESHOLD)
+
     if params.get("notify") is True and intent.domain != "general":
-        confidence = max(confidence, 0.95)
+        confidence = max(confidence, max(0.95, ORCHESTRATOR_CONFIDENCE_THRESHOLD))
 
     return intent.model_copy(update={"parameters": params, "confidence": confidence})
 

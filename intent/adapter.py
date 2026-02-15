@@ -11,6 +11,8 @@ Responsibility:
 import json
 import logging
 import os
+import re
+import unicodedata
 from typing import Any
 
 from models.selector import ModelSelector
@@ -31,6 +33,19 @@ class IntentAdapter:
         self.model_selector = model_selector
         self.capabilities = initial_capabilities or []
         self.capability_catalog = capability_catalog or []
+        self.force_domain_routing = os.getenv("INTENT_FORCE_DOMAIN_ROUTING", "true").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        self.multi_pass_enabled = os.getenv("INTENT_MULTI_PASS_ENABLED", "true").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        self.multi_pass_shortlist_size = int(os.getenv("INTENT_MULTI_PASS_SHORTLIST_SIZE", "6"))
 
         intent_timeout_seconds = float(os.getenv("INTENT_MODEL_TIMEOUT_SECONDS", "20"))
         intent_max_retries = int(os.getenv("INTENT_MODEL_MAX_RETRIES", "3"))
@@ -58,6 +73,19 @@ class IntentAdapter:
 
     def extract(self, input_text: str, history: list[dict] | None = None, session_id: str | None = None) -> IntentOutput:
         """Extract intent via model output without deterministic enrichment."""
+        fallback_domain, fallback_capability, fallback_confidence = self._fallback_intent_target(input_text)
+
+        if self.multi_pass_enabled and self.capability_catalog:
+            multi_pass_intent = self._extract_multi_pass(
+                input_text=input_text,
+                history=history,
+                session_id=session_id,
+                fallback_domain=fallback_domain,
+                fallback_capability=fallback_capability,
+            )
+            if multi_pass_intent is not None:
+                return multi_pass_intent
+
         messages = self._build_messages(input_text, history)
 
         try:
@@ -66,28 +94,437 @@ class IntentAdapter:
                 policy=self.policy,
                 session_id=session_id,
             )
-            if not isinstance(raw_data, dict):
-                raise ValueError("Model returned non-dict JSON")
-
-            raw_parameters = raw_data.get("parameters", {})
-            parameters = raw_parameters if isinstance(raw_parameters, dict) else {}
-
-            return IntentOutput(
-                domain=str(raw_data.get("domain", "general") or "general"),
-                capability=str(raw_data.get("action", "chat") or "chat"),
-                confidence=float(raw_data.get("confidence", 0.0)),
-                parameters=parameters,
-                original_query=input_text,
+            intent = self._intent_from_payload(
+                payload=raw_data,
+                input_text=input_text,
+                fallback_domain=fallback_domain,
+                fallback_capability=fallback_capability,
             )
+            return self._finalize_intent(intent=intent, shortlist=[])
         except Exception as e:
             logger.error("Intent extraction failed: %s", e)
-            return IntentOutput(
-                domain="general",
-                capability="chat",
-                confidence=0.0,
-                parameters={"message": input_text},
+            fallback_params: dict[str, Any] = {}
+            if fallback_domain == "general" and fallback_capability == "chat":
+                fallback_params["message"] = input_text
+            fallback_intent = IntentOutput(
+                domain=fallback_domain,
+                capability=fallback_capability,
+                confidence=fallback_confidence,
+                parameters=fallback_params,
                 original_query=input_text,
             )
+            return self._finalize_intent(intent=fallback_intent, shortlist=[])
+
+    def _extract_multi_pass(
+        self,
+        *,
+        input_text: str,
+        history: list[dict] | None,
+        session_id: str | None,
+        fallback_domain: str,
+        fallback_capability: str,
+    ) -> IntentOutput | None:
+        """
+        Multi-pass extraction:
+        1) Analyze relevant domains/capabilities/obvious parameters.
+        2) Select final capability from a scoped shortlist and normalize obvious params.
+        """
+        analysis_payload = self._run_analysis_pass(input_text=input_text, history=history, session_id=session_id)
+        if analysis_payload is None:
+            return None
+
+        shortlist = self._build_capability_shortlist(analysis_payload)
+        selection_payload = self._run_selection_pass(
+            input_text=input_text,
+            history=history,
+            session_id=session_id,
+            shortlist=shortlist,
+        )
+
+        candidate_payload = selection_payload if self._payload_looks_like_intent(selection_payload) else None
+        if candidate_payload is None and self._payload_looks_like_intent(analysis_payload):
+            candidate_payload = analysis_payload
+        if candidate_payload is None:
+            return None
+
+        intent = self._intent_from_payload(
+            payload=candidate_payload,
+            input_text=input_text,
+            fallback_domain=fallback_domain,
+            fallback_capability=fallback_capability,
+        )
+        obvious_parameters = analysis_payload.get("obvious_parameters")
+        params = dict(intent.parameters or {})
+        if isinstance(obvious_parameters, dict):
+            for key, value in obvious_parameters.items():
+                name = str(key).strip()
+                if not name:
+                    continue
+                if name not in params or params.get(name) in (None, "", []):
+                    params[name] = value
+        intent = intent.model_copy(update={"parameters": params})
+        return self._finalize_intent(intent=intent, shortlist=shortlist)
+
+    def _finalize_intent(self, *, intent: IntentOutput, shortlist: list[dict[str, Any]]) -> IntentOutput:
+        params = self._normalize_parameters_for_capability(
+            domain=intent.domain,
+            capability=intent.capability,
+            params=dict(intent.parameters or {}),
+        )
+        execution_steps = self._compose_execution_steps(
+            domain=intent.domain,
+            capability=intent.capability,
+            params=params,
+            shortlist=shortlist,
+        )
+        if execution_steps:
+            params["_execution_steps"] = execution_steps
+        return intent.model_copy(update={"parameters": params})
+
+    def _run_analysis_pass(
+        self,
+        *,
+        input_text: str,
+        history: list[dict] | None,
+        session_id: str | None,
+    ) -> dict[str, Any] | None:
+        messages = self._build_analysis_messages(input_text=input_text, history=history)
+        try:
+            raw = self.model_selector.generate(
+                messages=messages,
+                policy=self.policy,
+                session_id=session_id,
+            )
+        except Exception as exc:
+            logger.warning("Intent analysis pass failed: %s", exc)
+            return None
+
+        payload = self._parse_json_object(raw)
+        if not payload:
+            return None
+        return payload
+
+    def _run_selection_pass(
+        self,
+        *,
+        input_text: str,
+        history: list[dict] | None,
+        session_id: str | None,
+        shortlist: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        if not shortlist:
+            return None
+        messages = self._build_selection_messages(input_text=input_text, history=history, shortlist=shortlist)
+        try:
+            raw = self.model_selector.generate(
+                messages=messages,
+                policy=self.policy,
+                session_id=session_id,
+            )
+        except Exception as exc:
+            logger.warning("Intent selection pass failed: %s", exc)
+            return None
+        payload = self._parse_json_object(raw)
+        return payload if payload else None
+
+    def _payload_looks_like_intent(self, payload: dict[str, Any] | None) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        domain = str(payload.get("domain", "")).strip()
+        action = str(payload.get("action", "")).strip()
+        return bool(domain and action)
+
+    def _intent_from_payload(
+        self,
+        *,
+        payload: Any,
+        input_text: str,
+        fallback_domain: str,
+        fallback_capability: str,
+    ) -> IntentOutput:
+        if not isinstance(payload, dict):
+            raise ValueError("Model returned non-dict JSON")
+        raw_parameters = payload.get("parameters", {})
+        parameters = raw_parameters if isinstance(raw_parameters, dict) else {}
+        return IntentOutput(
+            domain=str(payload.get("domain", fallback_domain) or fallback_domain),
+            capability=str(payload.get("action", fallback_capability) or fallback_capability),
+            confidence=float(payload.get("confidence", 0.0)),
+            parameters=parameters,
+            original_query=input_text,
+        )
+
+    def _build_capability_shortlist(self, analysis_payload: dict[str, Any]) -> list[dict[str, Any]]:
+        candidates: list[tuple[float, str, str]] = []
+        relevant_caps = analysis_payload.get("relevant_capabilities")
+        if isinstance(relevant_caps, list):
+            for item in relevant_caps:
+                if not isinstance(item, dict):
+                    continue
+                domain = str(item.get("domain", "")).strip()
+                action = str(item.get("action", "")).strip()
+                if not domain or not action:
+                    continue
+                try:
+                    confidence = float(item.get("confidence", 0.0))
+                except Exception:
+                    confidence = 0.0
+                candidates.append((confidence, domain, action))
+
+        if not candidates and self._payload_looks_like_intent(analysis_payload):
+            domain = str(analysis_payload.get("domain", "")).strip()
+            action = str(analysis_payload.get("action", "")).strip()
+            confidence = float(analysis_payload.get("confidence", 0.0) or 0.0)
+            if domain and action:
+                candidates.append((confidence, domain, action))
+
+        if not candidates:
+            return []
+
+        seen: set[tuple[str, str]] = set()
+        shortlist: list[dict[str, Any]] = []
+        for confidence, domain, action in sorted(candidates, key=lambda item: item[0], reverse=True):
+            key = (domain, action)
+            if key in seen:
+                continue
+            seen.add(key)
+            entry = self._capability_catalog_entry(domain=domain, capability=action)
+            if entry is None:
+                continue
+            description = str(entry.get("description", "")).strip()
+            metadata = self._parse_json_object(entry.get("metadata"))
+            shortlist.append(
+                {
+                    "domain": domain,
+                    "action": action,
+                    "confidence": confidence,
+                    "description": description,
+                    "metadata": metadata,
+                }
+            )
+            if len(shortlist) >= max(1, self.multi_pass_shortlist_size):
+                break
+        return shortlist
+
+    def _compose_execution_steps(
+        self,
+        *,
+        domain: str,
+        capability: str,
+        params: dict[str, Any],
+        shortlist: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        clean_params = {
+            str(key): value
+            for key, value in (params or {}).items()
+            if str(key) and not str(key).startswith("_")
+        }
+        steps: list[dict[str, Any]] = [
+            {
+                "id": 1,
+                "domain": domain,
+                "capability": capability,
+                "params": clean_params,
+                "required": True,
+                "output_key": "primary",
+            }
+        ]
+
+        if clean_params.get("notify") is not True:
+            return steps
+
+        notifier_entry = self._select_notifier_entry(shortlist=shortlist)
+        if notifier_entry is None:
+            return steps
+
+        notifier_domain = str(notifier_entry.get("domain", "")).strip()
+        notifier_action = str(notifier_entry.get("action") or notifier_entry.get("capability") or "").strip()
+        notifier_meta = notifier_entry.get("metadata")
+        if not notifier_domain or not notifier_action or not isinstance(notifier_meta, dict):
+            return steps
+
+        notifier_params = self._build_notifier_params(source_params=clean_params, notifier_meta=notifier_meta)
+        steps.append(
+            {
+                "id": 2,
+                "domain": notifier_domain,
+                "capability": notifier_action,
+                "params": notifier_params,
+                "depends_on": [1],
+                "required": False,
+                "output_key": "notification",
+            }
+        )
+        return steps
+
+    def _select_notifier_entry(self, *, shortlist: list[dict[str, Any]]) -> dict[str, Any] | None:
+        candidates: list[dict[str, Any]] = []
+        for item in shortlist:
+            metadata = item.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+            composition = metadata.get("composition")
+            if isinstance(composition, dict) and str(composition.get("role", "")).strip().lower() == "notifier":
+                candidates.append(item)
+
+        if not candidates:
+            for item in self.capability_catalog:
+                if not isinstance(item, dict):
+                    continue
+                metadata = self._parse_json_object(item.get("metadata"))
+                composition = metadata.get("composition")
+                if not isinstance(composition, dict):
+                    continue
+                if str(composition.get("role", "")).strip().lower() != "notifier":
+                    continue
+                candidates.append(
+                    {
+                        "domain": str(item.get("domain", "")).strip(),
+                        "action": str(item.get("capability", "")).strip(),
+                        "metadata": metadata,
+                    }
+                )
+
+        if not candidates:
+            return None
+
+        candidates.sort(
+            key=lambda entry: int(
+                (
+                    entry.get("metadata", {})
+                    if isinstance(entry.get("metadata"), dict)
+                    else {}
+                ).get("composition", {}).get("priority", 0)
+            ),
+            reverse=True,
+        )
+        return candidates[0]
+
+    def _build_notifier_params(self, *, source_params: dict[str, Any], notifier_meta: dict[str, Any]) -> dict[str, Any]:
+        composition = notifier_meta.get("composition")
+        if not isinstance(composition, dict):
+            return {}
+        param_map = composition.get("param_map")
+        if not isinstance(param_map, dict):
+            return {}
+
+        resolved: dict[str, Any] = {}
+        for target_param, source_spec in param_map.items():
+            if isinstance(source_spec, dict):
+                from_params = source_spec.get("from_parameters")
+                copied: Any = None
+                if isinstance(from_params, list):
+                    for source_name in from_params:
+                        key = str(source_name).strip()
+                        if not key:
+                            continue
+                        if key in source_params and source_params.get(key) not in (None, ""):
+                            copied = source_params.get(key)
+                            break
+                if copied not in (None, ""):
+                    resolved[str(target_param)] = copied
+                    continue
+                if "default" in source_spec:
+                    resolved[str(target_param)] = source_spec.get("default")
+                    continue
+            else:
+                resolved[str(target_param)] = source_spec
+        return resolved
+
+    def _fallback_intent_target(self, input_text: str) -> tuple[str, str, float]:
+        """Choose fallback target from runtime catalog using metadata evidence."""
+        text_norm = self._normalize_text(input_text)
+        text_tokens = self._tokenize_text(input_text)
+
+        best: tuple[float, str, str] | None = None
+        parsed_catalog: list[tuple[str, str]] = []
+        if isinstance(self.capability_catalog, list):
+            for item in self.capability_catalog:
+                if not isinstance(item, dict):
+                    continue
+                domain = str(item.get("domain", "")).strip()
+                capability = str(item.get("capability", "")).strip()
+                if not domain or not capability:
+                    continue
+                parsed_catalog.append((domain, capability))
+
+                hints: list[str] = []
+                hints.append(capability.replace("_", " "))
+                description = str(item.get("description", "")).strip()
+                if description:
+                    hints.append(description)
+                metadata = self._parse_json_object(item.get("metadata"))
+                domain_description = str(metadata.get("domain_description", "")).strip()
+                if domain_description:
+                    hints.append(domain_description)
+                domain_hints = metadata.get("domain_intent_hints")
+                if isinstance(domain_hints, dict):
+                    for key in ("keywords", "examples"):
+                        values = domain_hints.get(key)
+                        if isinstance(values, list):
+                            for value in values:
+                                hint_text = str(value).strip()
+                                if hint_text:
+                                    hints.append(hint_text)
+                intent_hints = metadata.get("intent_hints") if isinstance(metadata, dict) else None
+                if isinstance(intent_hints, dict):
+                    for key in ("keywords", "examples"):
+                        values = intent_hints.get(key)
+                        if isinstance(values, list):
+                            for value in values:
+                                hint_text = str(value).strip()
+                                if hint_text:
+                                    hints.append(hint_text)
+
+                score = 0.0
+                for hint in hints:
+                    score = max(score, self._hint_match_score(text_norm, text_tokens, hint))
+                if score <= 0:
+                    continue
+
+                if best is None or score > best[0]:
+                    best = (score, domain, capability)
+
+        if best is not None:
+            score, domain, capability = best
+            confidence = min(0.7, max(0.25, score / 10.0))
+            return domain, capability, confidence
+
+        for domain, capability in parsed_catalog:
+            if domain == "general" and capability == "chat":
+                return domain, capability, 0.0
+
+        if parsed_catalog:
+            domain, capability = parsed_catalog[0]
+            return domain, capability, 0.0
+        return "general", "chat", 0.0
+
+    def _normalize_text(self, text: str) -> str:
+        if not text:
+            return ""
+        lowered = text.lower()
+        normalized = unicodedata.normalize("NFKD", lowered)
+        return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+
+    def _tokenize_text(self, text: str) -> set[str]:
+        return {token for token in re.findall(r"[a-z0-9]{2,}", self._normalize_text(text))}
+
+    def _hint_match_score(self, query_norm: str, query_tokens: set[str], hint: str) -> float:
+        hint_norm = self._normalize_text(str(hint))
+        if not hint_norm:
+            return 0.0
+
+        if hint_norm in query_norm:
+            return 8.0
+
+        hint_tokens = {token for token in re.findall(r"[a-z0-9]{2,}", hint_norm)}
+        if not hint_tokens or not query_tokens:
+            return 0.0
+
+        overlap = hint_tokens & query_tokens
+        if not overlap:
+            return 0.0
+        return 2.0 + (len(overlap) / max(1, len(hint_tokens))) * 4.0
 
     def _parse_json_object(self, raw: Any) -> dict[str, Any]:
         if isinstance(raw, dict):
@@ -179,20 +616,146 @@ class IntentAdapter:
 
         return specs
 
+    def _infer_value_from_symbol_suffix(self, params: dict[str, Any], spec: dict[str, Any]) -> Any:
+        infer_map = spec.get("infer_from_symbol_suffix")
+        if not isinstance(infer_map, dict):
+            return None
+
+        symbol_value: str | None = None
+        raw_symbol = params.get("symbol")
+        if isinstance(raw_symbol, str) and raw_symbol.strip():
+            symbol_value = raw_symbol.strip().upper()
+        else:
+            raw_symbols = params.get("symbols")
+            if isinstance(raw_symbols, list):
+                for item in raw_symbols:
+                    if isinstance(item, str) and item.strip():
+                        symbol_value = item.strip().upper()
+                        break
+
+        if not symbol_value:
+            return None
+
+        for suffix_raw, inferred in infer_map.items():
+            suffix = str(suffix_raw).strip().upper()
+            if suffix and symbol_value.endswith(suffix):
+                return inferred
+        return None
+
+    def _normalize_parameter_value(self, value: Any, spec: dict[str, Any]) -> Any:
+        if isinstance(value, list):
+            item_spec = spec.get("items") if isinstance(spec.get("items"), dict) else spec
+            return [self._normalize_parameter_value(item, item_spec) for item in value]
+
+        if not isinstance(value, str):
+            return value
+
+        text = value.strip()
+        if not text:
+            return text
+
+        aliases = spec.get("aliases")
+        if isinstance(aliases, dict):
+            direct = aliases.get(text)
+            if direct is None:
+                direct = aliases.get(text.upper())
+            if direct is None:
+                direct = aliases.get(text.lower())
+            if direct is None:
+                text_norm = self._normalize_text(text)
+                for raw_alias, mapped in aliases.items():
+                    if self._normalize_text(str(raw_alias)) == text_norm:
+                        direct = mapped
+                        break
+            if direct is not None:
+                return direct
+
+        normalization = spec.get("normalization")
+        if isinstance(normalization, dict):
+            case_mode = str(normalization.get("case", "")).strip().lower()
+            if case_mode == "upper":
+                text = text.upper()
+            elif case_mode == "lower":
+                text = text.lower()
+            suffix = normalization.get("suffix")
+            if isinstance(suffix, str) and suffix.strip():
+                suffix_value = suffix.strip()
+                if not text.upper().endswith(suffix_value.upper()):
+                    text = f"{text}{suffix_value}"
+
+        enum = spec.get("enum")
+        if isinstance(enum, list):
+            for item in enum:
+                if str(item).strip().lower() == text.lower():
+                    text = item
+                    break
+        return text
+
+    def _normalize_parameters_for_capability(
+        self,
+        *,
+        domain: str,
+        capability: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        specs = self._parameter_specs_for_capability(domain=domain, capability=capability)
+        if not specs:
+            return params
+
+        normalized = dict(params or {})
+        for param_name, spec in specs.items():
+            if not isinstance(spec, dict):
+                continue
+            key = str(param_name).strip()
+            if not key:
+                continue
+            value = normalized.get(key)
+            if value in (None, ""):
+                inferred = self._infer_value_from_symbol_suffix(normalized, spec)
+                if inferred not in (None, ""):
+                    normalized[key] = inferred
+                    value = inferred
+                elif "default" in spec:
+                    normalized[key] = spec.get("default")
+                    value = normalized.get(key)
+            if value is None:
+                continue
+            normalized[key] = self._normalize_parameter_value(value, spec)
+        return normalized
+
     def _render_capability_catalog(self) -> str:
         """Render domain/action catalog from runtime registry data."""
         if not self.capability_catalog:
             return ""
 
-        grouped: dict[str, list[dict[str, Any]]] = {}
-        for item in self.capability_catalog:
-            domain = str(item.get("domain", "")).strip() or "unknown"
-            grouped.setdefault(domain, []).append(item)
+        grouped = self._domain_catalog()
 
         lines: list[str] = []
         for domain in sorted(grouped.keys()):
-            lines.append(f"- Domain '{domain}':")
-            for cap in sorted(grouped[domain], key=lambda x: str(x.get("capability", ""))):
+            domain_payload = grouped[domain]
+            domain_description = str(domain_payload.get("description", "")).strip()
+            if domain_description:
+                lines.append(f"- Domain '{domain}': {domain_description}")
+            else:
+                lines.append(f"- Domain '{domain}':")
+
+            domain_hints = domain_payload.get("intent_hints")
+            if isinstance(domain_hints, dict):
+                hint_keywords = domain_hints.get("keywords")
+                if isinstance(hint_keywords, list):
+                    valid_keywords = [str(v).strip() for v in hint_keywords if str(v).strip()]
+                    if valid_keywords:
+                        lines.append(f"  - domain intent keywords: {', '.join(valid_keywords[:8])}")
+                hint_examples = domain_hints.get("examples")
+                if isinstance(hint_examples, list):
+                    valid_examples = [str(v).strip() for v in hint_examples if str(v).strip()]
+                    if valid_examples:
+                        lines.append(f"  - domain intent examples: {valid_examples[0]}")
+
+            capabilities = domain_payload.get("capabilities")
+            if not isinstance(capabilities, list):
+                capabilities = []
+            for cap in sorted(capabilities, key=lambda x: str(x.get("capability", ""))):
                 cap_name = str(cap.get("capability", "")).strip()
                 cap_desc = str(cap.get("description", "")).strip() or "No description provided."
                 lines.append(f"  - action '{cap_name}': {cap_desc}")
@@ -231,6 +794,85 @@ class IntentAdapter:
 
         return "\n".join(lines)
 
+    def _domain_catalog(self) -> dict[str, dict[str, Any]]:
+        grouped: dict[str, dict[str, Any]] = {}
+        for item in self.capability_catalog:
+            domain = str(item.get("domain", "")).strip() or "unknown"
+            payload = grouped.setdefault(
+                domain,
+                {
+                    "description": "",
+                    "intent_hints": {},
+                    "capabilities": [],
+                },
+            )
+            metadata = self._parse_json_object(item.get("metadata"))
+            if not payload.get("description"):
+                domain_description = str(metadata.get("domain_description", "")).strip()
+                if domain_description:
+                    payload["description"] = domain_description
+            if not payload.get("intent_hints") and isinstance(metadata.get("domain_intent_hints"), dict):
+                payload["intent_hints"] = metadata.get("domain_intent_hints")
+            payload["capabilities"].append(item)
+        return grouped
+
+    def _render_domain_catalog(self) -> str:
+        grouped = self._domain_catalog()
+        lines: list[str] = []
+        for domain in sorted(grouped.keys()):
+            payload = grouped[domain]
+            description = str(payload.get("description", "")).strip()
+            if description:
+                lines.append(f"- domain '{domain}': {description}")
+            else:
+                lines.append(f"- domain '{domain}'")
+            intent_hints = payload.get("intent_hints")
+            if isinstance(intent_hints, dict):
+                keywords = intent_hints.get("keywords")
+                if isinstance(keywords, list):
+                    valid = [str(v).strip() for v in keywords if str(v).strip()]
+                    if valid:
+                        lines.append(f"  - keywords: {', '.join(valid[:8])}")
+                examples = intent_hints.get("examples")
+                if isinstance(examples, list):
+                    valid_examples = [str(v).strip() for v in examples if str(v).strip()]
+                    if valid_examples:
+                        lines.append(f"  - example: {valid_examples[0]}")
+            capabilities = payload.get("capabilities")
+            if isinstance(capabilities, list):
+                cap_names = [str(cap.get("capability", "")).strip() for cap in capabilities if str(cap.get("capability", "")).strip()]
+                if cap_names:
+                    lines.append(f"  - capabilities: {', '.join(sorted(cap_names)[:12])}")
+        return "\n".join(lines)
+
+    def _render_shortlist_catalog(self, shortlist: list[dict[str, Any]]) -> str:
+        if not shortlist:
+            return ""
+        lines: list[str] = []
+        for item in shortlist:
+            domain = str(item.get("domain", "")).strip()
+            action = str(item.get("action", "")).strip()
+            description = str(item.get("description", "")).strip()
+            confidence = item.get("confidence")
+            confidence_txt = ""
+            if isinstance(confidence, (int, float)):
+                confidence_txt = f" (analysis_conf={float(confidence):.2f})"
+            lines.append(f"- {domain}.{action}{confidence_txt}: {description}")
+            metadata = item.get("metadata")
+            if isinstance(metadata, dict):
+                specs = metadata.get("parameter_specs")
+                if isinstance(specs, dict):
+                    for idx, (param_name, spec) in enumerate(sorted(specs.items()), start=1):
+                        if idx > 6:
+                            lines.append("  - ...")
+                            break
+                        if not isinstance(spec, dict):
+                            continue
+                        ptype = str(spec.get("type", "any")).strip() or "any"
+                        req = "required" if bool(spec.get("required")) else "optional"
+                        lines.append(f"  - param '{param_name}' ({ptype}, {req})")
+        return "\n".join(lines)
+
     def _build_system_prompt(self) -> str:
         """Build the system prompt dynamically from the runtime catalog when available."""
         catalog_block = self._render_capability_catalog()
@@ -240,12 +882,22 @@ class IntentAdapter:
                 and str(item.get("capability", "")).strip() == "list_capabilities"
                 for item in self.capability_catalog
             )
-            discovery_rule = (
-                '2. For greetings/casual conversation/help: use domain "general" and action "chat".\n'
-                '3. If user asks "what can you do", "list capabilities", or "which domains": use domain "general" and action "list_capabilities".\n'
-                if has_list_capability
-                else '2. For greetings, casual conversation, help, or "what can you do?" questions: use domain "general" and action "chat".\n'
+            has_non_general_capability = any(
+                str(item.get("domain", "")).strip() not in {"", "general"}
+                for item in self.capability_catalog
             )
+            if self.force_domain_routing and has_non_general_capability:
+                discovery_rule = (
+                    '2. Prefer non-general domains/actions from the catalog.\n'
+                    '3. Use domain "general"/action "chat" only for explicit assistant/chit-chat questions.\n'
+                )
+            else:
+                discovery_rule = (
+                    '2. For greetings/casual conversation/help: use domain "general" and action "chat".\n'
+                    '3. If user asks "what can you do", "list capabilities", or "which domains": use domain "general" and action "list_capabilities".\n'
+                    if has_list_capability
+                    else '2. For greetings, casual conversation, help, or "what can you do?" questions: use domain "general" and action "chat".\n'
+                )
             return f"""You are an intent extraction engine. Your ONLY job is to analyze the user's message and return a structured JSON object.
 
 You MUST respond with ONLY a valid JSON object. No explanations, no markdown, no extra text.
@@ -296,6 +948,58 @@ Rules:
 3. Return ONLY the JSON object.
 """
 
+    def _build_analysis_prompt(self) -> str:
+        domain_catalog = self._render_domain_catalog()
+        capability_catalog = self._render_capability_catalog()
+        return f"""You are an intent analysis engine.
+
+Your job is to analyze the user message and produce a relevance map across domains, capabilities, and obvious parameters.
+Use ONLY the domains/actions from the runtime catalog.
+
+Return ONLY a valid JSON object with this schema:
+{{
+  "relevant_domains": [{{"domain": "<domain>", "confidence": <0.0-1.0>, "reason": "<short>"}}],
+  "relevant_capabilities": [{{"domain": "<domain>", "action": "<action>", "confidence": <0.0-1.0>, "reason": "<short>"}}],
+  "obvious_parameters": {{}}
+}}
+
+Rules:
+1. Add only domains/capabilities that are relevant to the user request.
+2. "obvious_parameters" should include only values explicit or very clear from user text.
+3. Do not invent unknown values.
+4. Keep confidence conservative when ambiguous.
+
+Domain catalog:
+{domain_catalog}
+
+Capability catalog:
+{capability_catalog}
+"""
+
+    def _build_selection_prompt(self, shortlist: list[dict[str, Any]]) -> str:
+        shortlist_block = self._render_shortlist_catalog(shortlist)
+        return f"""You are an intent selector.
+
+Choose exactly ONE final action from the provided shortlist and return ONLY valid JSON.
+
+Required output schema:
+{{
+  "domain": "<domain>",
+  "action": "<action>",
+  "parameters": {{}},
+  "confidence": <float 0.0-1.0>
+}}
+
+Rules:
+1. domain/action MUST be one of the shortlist entries.
+2. Fill parameters only when explicit/obvious from user message or aliases.
+3. Keep confidence lower when missing required parameters.
+4. Return ONLY JSON.
+
+Shortlist:
+{shortlist_block}
+"""
+
     def _build_messages(self, input_text: str, history: list[dict] | None = None) -> list[dict]:
         """Build model messages for intent extraction."""
         messages = [{"role": "system", "content": self._build_system_prompt()}]
@@ -309,5 +1013,37 @@ Rules:
                     }
                 )
 
+        messages.append({"role": "user", "content": input_text})
+        return messages
+
+    def _build_analysis_messages(self, input_text: str, history: list[dict] | None = None) -> list[dict]:
+        messages = [{"role": "system", "content": self._build_analysis_prompt()}]
+        if history:
+            for turn in history[-6:]:
+                messages.append(
+                    {
+                        "role": turn.get("role", "user"),
+                        "content": turn.get("content", ""),
+                    }
+                )
+        messages.append({"role": "user", "content": input_text})
+        return messages
+
+    def _build_selection_messages(
+        self,
+        *,
+        input_text: str,
+        history: list[dict] | None = None,
+        shortlist: list[dict[str, Any]],
+    ) -> list[dict]:
+        messages = [{"role": "system", "content": self._build_selection_prompt(shortlist=shortlist)}]
+        if history:
+            for turn in history[-6:]:
+                messages.append(
+                    {
+                        "role": turn.get("role", "user"),
+                        "content": turn.get("content", ""),
+                    }
+                )
         messages.append({"role": "user", "content": input_text})
         return messages
