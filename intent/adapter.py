@@ -171,14 +171,9 @@ class IntentAdapter:
             capability=intent.capability,
             params=dict(intent.parameters or {}),
         )
-        execution_steps = self._compose_execution_steps(
-            domain=intent.domain,
-            capability=intent.capability,
-            params=params,
-            shortlist=shortlist,
-        )
-        if execution_steps:
-            params["_execution_steps"] = execution_steps
+        # NOTE: Execution step composition is handled by TaskDecomposer, not here
+        # The adapter's job is to extract intent structure, not create execution plans
+        # (Removing _execution_steps to let TaskDecomposer handle decomposition via metadata)
         return intent.model_copy(update={"parameters": params})
 
     def _run_analysis_pass(
