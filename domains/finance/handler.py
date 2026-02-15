@@ -406,7 +406,7 @@ class FinanceDomainHandler:
                     return out
                 resolved = out
             elif step_type == "resolve_symbol_list":
-                out = self._flow_resolve_symbol_list(step=step, params=resolved)
+                out = self._flow_resolve_symbol_list(step=step, params=resolved, original_query=original_query)
                 if isinstance(out, DomainOutput):
                     return out
                 resolved = out
@@ -547,6 +547,107 @@ class FinanceDomainHandler:
 
         return None
 
+
+    def _infer_symbols_from_query_text(self, query: str) -> list[str]:
+        """
+        Extract ALL symbols from query text (not just the first one).
+        
+        Returns a list of inferred symbols in the order they appear.
+        Each symbol can be either:
+        - An explicit symbol with exchange suffix (e.g., PETR4.SA, VOLV-B.ST)
+        - A B3 code (e.g., PETR4, VALE3)
+        - A company alias (e.g., PETRO, VALE)
+        - A plain company token (e.g., ITAU)
+        """
+        text = (query or "").strip().upper()
+        if not text:
+            return []
+
+        found_symbols: list[str] = []
+        seen: set[str] = set()  # Track what we've already added to avoid duplicates
+
+        # Explicit exchange suffix first (e.g. PETR4.SA, VOLV-B.ST, AAPL)
+        explicit_matches = re.findall(r"\b([A-Z0-9-]{1,12}\.[A-Z]{1,4})\b", text)
+        for candidate in explicit_matches:
+            normalized = self._normalize_canonical_symbol(candidate)
+            if normalized and normalized not in seen:
+                found_symbols.append(normalized)
+                seen.add(normalized)
+
+        # B3 pattern without suffix (e.g. PETR4, VALE3, BOVA11)
+        b3_matches = re.findall(r"\b([A-Z]{4}(?:3|4|5|6|11)(?:F)?)\b", text)
+        for candidate in b3_matches:
+            normalized = self._normalize_canonical_symbol(candidate)
+            if normalized and normalized not in seen:
+                found_symbols.append(normalized)
+                seen.add(normalized)
+
+        # Common noisy B3 token (e.g. PETRO4 -> PETR4.SA)
+        quasi_b3_matches = re.findall(r"\b([A-Z]{5,8}(?:3|4|5|6|11)(?:F)?)\b", text)
+        for candidate in quasi_b3_matches:
+            if candidate.endswith("11"):
+                compact = f"{candidate[:4]}11"
+            else:
+                compact = f"{candidate[:4]}{candidate[-1]}"
+            normalized = self._normalize_canonical_symbol(compact)
+            if normalized and normalized not in seen:
+                found_symbols.append(normalized)
+                seen.add(normalized)
+
+        # Fallback for company-like plain tokens (e.g. "petro", "vale", "itau").
+        # Prefer tokens after prepositions used in natural requests:
+        # "valor da PETRO", "preco de VALE".
+        contextual_tokens = re.findall(r"\b(?:DA|DE|DO)\s+([A-Z]{4,10})\b", text)
+        plain_tokens = contextual_tokens or re.findall(r"\b([A-Z]{4,8})\b", text)
+        stopwords = {
+            "QUAL",
+            "VALOR",
+            "PRECO",
+            "PREÇO",
+            "COTACAO",
+            "COTAÇÃO",
+            "PEGUE",
+            "MANDE",
+            "ENVIE",
+            "TELEGRAM",
+            "HOJE",
+            "DIGA",
+            "MANDA",
+            "ENVIA",
+            "ENVIAR",
+            "PEGA",
+            "ME",
+            "NO",
+            "E",  # Avoid treating "e" (and) as a token
+            "COMPARE",
+            "COMPARAR",
+            "MOSTRA",
+            "MOSTAR",
+            "MOSTRE",
+            "MOSTRANDO",
+            "PEGA",
+            "POR",
+            "PARA",
+            "ESTA",
+            "ESTAO",
+            "ESTÃO",
+            "EM",
+            "SOBRE",
+            "QUANTO",
+            "COMO",
+            "QUANDO",
+            "ONDE",
+            "QUAL",
+        }
+        for token in plain_tokens:
+            if token in stopwords:
+                continue
+            if token not in seen:
+                found_symbols.append(token)
+                seen.add(token)
+
+        return found_symbols
+
     def _resolve_symbol_alias(self, raw_symbol: str) -> str | None:
         normalized = (raw_symbol or "").strip().upper()
         if not normalized:
@@ -561,11 +662,21 @@ class FinanceDomainHandler:
             return self.symbol_aliases.get(compact)
         return None
 
-    def _flow_resolve_symbol_list(self, step: dict[str, Any], params: dict[str, Any]) -> dict[str, Any] | DomainOutput:
+    def _flow_resolve_symbol_list(self, step: dict[str, Any], params: dict[str, Any], original_query: str = "") -> dict[str, Any] | DomainOutput:
         field = str(step.get("param", "symbols")).strip() or "symbols"
         raw_values = params.get(field)
         if not isinstance(raw_values, list) or not raw_values:
-            return params
+            # If symbols not provided, try to infer from original query
+            if original_query:
+                inferred = self._infer_symbols_from_query_text(original_query)
+                if inferred:
+                    raw_values = inferred
+                    logger.info("Inferred symbols from query text: %s", inferred)
+                else:
+                    return params
+            else:
+                return params
+
 
         resolved_list: list[str] = []
         for idx, item in enumerate(raw_values):

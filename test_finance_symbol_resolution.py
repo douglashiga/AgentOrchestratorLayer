@@ -196,3 +196,57 @@ def test_operational_error_is_mapped_to_clarification():
     out = handler._map_operational_error_to_clarification("get_stock_price", decision)
     assert out is not None
     assert out.status == "clarification"
+
+
+def test_infer_multiple_symbols_from_query_text():
+    """Test extraction of multiple symbols from a single query."""
+    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None)
+    
+    # Test 3-symbol query: PETR4, vale3 (lowercase), and itau (plain token)
+    symbols = handler._infer_symbols_from_query_text("qual o valor da PETR4 vale3 e itau?")
+    assert "PETR4.SA" in symbols
+    assert "VALE3.SA" in symbols
+    assert "ITAU" in symbols
+    assert len(symbols) == 3
+
+
+def test_infer_multiple_symbols_returns_list():
+    """Test that _infer_symbols_from_query_text always returns a list."""
+    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None)
+    
+    result = handler._infer_symbols_from_query_text("qual o valor da PETR4 e da VALE3?")
+    assert isinstance(result, list)
+    assert len(result) == 2
+    assert result[0] == "PETR4.SA"
+    assert result[1] == "VALE3.SA"
+
+
+def test_infer_symbols_filters_stopwords():
+    """Test that stopwords are filtered from symbol extraction."""
+    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None)
+    
+    # "COMPARE", "VALOR", "QUAL" should be filtered out
+    symbols = handler._infer_symbols_from_query_text("compare petr4, vale3, itau e bradesco")
+    assert "COMPARE" not in symbols
+    assert "PETR4.SA" in symbols
+    assert "VALE3.SA" in symbols
+    assert "ITAU" in symbols
+    assert "BRADESCO" in symbols
+
+
+def test_flow_resolve_symbol_list_infers_from_query():
+    """Test that _flow_resolve_symbol_list infers symbols from query when not provided."""
+    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None)
+    
+    # Call with empty symbols parameter and original_query
+    result = handler._flow_resolve_symbol_list(
+        step={"param": "symbols", "search_capability": "search_symbol"},
+        params={},  # No symbols provided
+        original_query="qual o valor da PETR4 vale3 e itau?"
+    )
+    
+    # Should have inferred the symbols and attempted resolution
+    assert isinstance(result, dict)
+    assert "symbols" in result
+    assert len(result["symbols"]) == 3
+
