@@ -59,25 +59,42 @@ class StrategyCore:
         else:
             result = {"value": raw_result}
 
+        # Helper to create market context dict from DomainContext
+        def _make_market_context(ctx: DomainContext) -> dict:
+            return {
+                "market": ctx.market,
+                "country": ctx.country,
+                "currency": ctx.currency,
+                "currency_symbol": ctx.currency_symbol,
+                "exchange": ctx.exchange,
+                "exchange_suffix": ctx.exchange_suffix,
+                "timezone": ctx.exchange_timezone,
+                "trading_hours": ctx.trading_hours,
+                "lot_size": ctx.lot_size,
+                "settlement": f"T+{ctx.settlement_days}",
+                "has_options": ctx.has_options,
+                "tax_model": ctx.tax_model,
+                "tax_rate_gains": f"{ctx.tax_rate_gains:.0%}",
+                "tax_notes": ctx.tax_notes,
+            }
+
+        # Apply market context enrichment
+        # For multi-symbol queries, also include per-symbol contexts
         enriched_result = {
             **result,
-            "_market_context": {
-                "market": domain_ctx.market,
-                "country": domain_ctx.country,
-                "currency": domain_ctx.currency,
-                "currency_symbol": domain_ctx.currency_symbol,
-                "exchange": domain_ctx.exchange,
-                "exchange_suffix": domain_ctx.exchange_suffix,
-                "timezone": domain_ctx.exchange_timezone,
-                "trading_hours": domain_ctx.trading_hours,
-                "lot_size": domain_ctx.lot_size,
-                "settlement": f"T+{domain_ctx.settlement_days}",
-                "has_options": domain_ctx.has_options,
-                "tax_model": domain_ctx.tax_model,
-                "tax_rate_gains": f"{domain_ctx.tax_rate_gains:.0%}",
-                "tax_notes": domain_ctx.tax_notes,
-            },
+            "_market_context": _make_market_context(domain_ctx),
         }
+
+        # If we have per-symbol contexts (multi-symbol query), add them
+        if hasattr(execution_context, 'multi_contexts') and execution_context.multi_contexts:
+            enriched_result["_symbol_contexts"] = {
+                symbol: _make_market_context(ctx)
+                for symbol, ctx in execution_context.multi_contexts.items()
+            }
+            logger.debug(
+                "Enriched result with %d per-symbol contexts",
+                len(execution_context.multi_contexts)
+            )
 
         # Generate human-readable explanation
         explanation = self._generate_explanation(intent, result, domain_ctx, registry)

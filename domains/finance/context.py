@@ -213,6 +213,26 @@ class ContextResolver:
         """
         return symbol.strip().upper()
 
+    def resolve_multiple(self, symbols: list[str]) -> dict[str, DomainContext]:
+        """
+        Resolve multiple symbols to their respective contexts.
+
+        Args:
+            symbols: List of symbols (e.g., ['PETR4.SA', 'TELIA.ST', 'AAPL'])
+
+        Returns:
+            Dict mapping symbol → DomainContext
+            Example: {
+                'PETR4.SA': DomainContext(market='BR', currency='BRL', ...),
+                'TELIA.ST': DomainContext(market='SE', currency='SEK', ...),
+                'AAPL': DomainContext(market='US', currency='USD', ...)
+            }
+        """
+        result = {}
+        for symbol in symbols:
+            result[symbol] = self.resolve(symbol)
+        return result
+
     def get_market_profile(self, market_code: str) -> DomainContext | None:
         """Get a full market profile by market code (e.g., 'BR', 'SE', 'US')."""
         profiles = {

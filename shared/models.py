@@ -117,6 +117,10 @@ class ExecutionContext(BaseModel):
 
     domain_context: DomainContext
     skill_data: dict[str, Any] = Field(default_factory=dict)
+    multi_contexts: dict[str, DomainContext] | None = Field(
+        default=None,
+        description="Per-symbol contexts for multi-symbol queries (symbol → DomainContext mapping)"
+    )
 
 
 # ─── Decision (final output) ───────────────────────────────────

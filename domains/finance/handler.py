@@ -187,18 +187,25 @@ class FinanceDomainHandler:
         # ─── 2. Context Resolution ───────────────────────────────────
         try:
             # Try to resolve from specific params first
+            multi_contexts = None
             if params.get("symbol"):
                 domain_context = self.context_resolver.resolve(params["symbol"])
             elif params.get("symbols") and isinstance(params["symbols"], list) and params["symbols"]:
+                 # For multiple symbols, resolve each one
                  domain_context = self.context_resolver.resolve(params["symbols"][0])
+                 if len(params["symbols"]) > 1:
+                     # Store per-symbol contexts for multi-symbol queries
+                     multi_contexts = self.context_resolver.resolve_multiple(params["symbols"])
             elif params.get("market"):
                  domain_context = self.context_resolver.get_market_profile(params["market"])
                  if not domain_context:
-                      domain_context = self.context_resolver.resolve("DEFAULT") 
+                      domain_context = self.context_resolver.resolve("DEFAULT")
             else:
                  domain_context = self.context_resolver.resolve("DEFAULT")
 
             logger.info("Context resolved: %s (%s)", domain_context.market, domain_context.currency)
+            if multi_contexts:
+                logger.debug("Multi-symbol contexts: %s", list(multi_contexts.keys()))
             
             # ─── 3. Skill Execution ──────────────────────────────────
             
@@ -234,6 +241,7 @@ class FinanceDomainHandler:
             execution_context = ExecutionContext(
                 domain_context=domain_context,
                 skill_data=skill_data,
+                multi_contexts=multi_contexts,
             )
 
             intent_for_decision = intent.model_copy(update={"parameters": params})
