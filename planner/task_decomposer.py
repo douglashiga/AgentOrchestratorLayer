@@ -26,13 +26,18 @@ class TaskDecomposer:
 
     def decompose(self, intent: IntentOutput) -> ExecutionPlan:
         """Decompose intent into 1..N execution steps."""
+        source_entry = self._find_capability_entry(intent.domain, intent.capability)
+        source_meta = self._metadata_of(source_entry)
+
         base_step = self._build_primary_step(intent)
         multi_symbol_plan = self._build_multi_symbol_price_plan(intent)
         if multi_symbol_plan is not None:
-            return multi_symbol_plan
+            return self._append_followup_if_configured(
+                base_plan=multi_symbol_plan,
+                intent=intent,
+                source_meta=source_meta,
+            )
 
-        source_entry = self._find_capability_entry(intent.domain, intent.capability)
-        source_meta = self._metadata_of(source_entry)
         if self._has_method_contract(source_meta):
             return self._single_step_plan(base_step)
 
@@ -64,6 +69,52 @@ class TaskDecomposer:
             combine_mode="report",
             max_concurrency=4,
             steps=[base_step, followup_step],
+        )
+
+    def _append_followup_if_configured(
+        self,
+        *,
+        base_plan: ExecutionPlan,
+        intent: IntentOutput,
+        source_meta: dict[str, Any],
+    ) -> ExecutionPlan:
+        composition_cfg = source_meta.get("composition")
+        if not isinstance(composition_cfg, dict):
+            return base_plan
+        if not self._composition_enabled(intent, composition_cfg):
+            return base_plan
+
+        followup_roles = composition_cfg.get("followup_roles") or []
+        if not isinstance(followup_roles, list) or not followup_roles:
+            return base_plan
+
+        followup_entry = self._select_followup_capability(followup_roles)
+        if not followup_entry:
+            return base_plan
+
+        followup_step = self._build_followup_step(
+            intent=intent,
+            followup_entry=followup_entry,
+            source_config=composition_cfg,
+        )
+        if not followup_step:
+            return base_plan
+
+        next_id = max(step.id for step in base_plan.steps) + 1
+        followup_depends_on = [step.id for step in base_plan.steps]
+        followup_step = followup_step.model_copy(
+            update={
+                "id": next_id,
+                "depends_on": followup_depends_on,
+                "output_key": str(composition_cfg.get("followup_output_key", "followup")),
+            }
+        )
+
+        return ExecutionPlan(
+            execution_mode="dag",
+            combine_mode="report",
+            max_concurrency=max(base_plan.max_concurrency, 4),
+            steps=[*base_plan.steps, followup_step],
         )
 
     def _build_primary_step(self, intent: IntentOutput) -> ExecutionStep:

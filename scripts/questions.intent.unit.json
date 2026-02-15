@@ -1,0 +1,130 @@
+[
+  {
+    "question": "qual o valor da petro",
+    "prompt_contains": ["action 'get_stock_price'"],
+    "expected": {
+      "intent_domain": "finance",
+      "intent_capability": "get_stock_price",
+      "intent_parameters_contains": {
+        "symbol": "PETR4.SA",
+        "currency": "BRL",
+        "exchange": "BOVESPA"
+      },
+      "plan_min_steps": 1,
+      "plan_contains_step_capabilities": ["get_stock_price"]
+    }
+  },
+  {
+    "question": "compare fundamentos",
+    "prompt_contains": ["action 'compare_fundamentals'"],
+    "expected": {
+      "intent_domain": "finance",
+      "intent_capability": "compare_fundamentals",
+      "plan_min_steps": 1,
+      "plan_contains_step_capabilities": ["compare_fundamentals"]
+    }
+  },
+  {
+    "question": "qual o valor da vale3 e petro4",
+    "prompt_contains": ["action 'get_stock_price'"],
+    "expected": {
+      "intent_domain": "finance",
+      "intent_capability": "get_stock_price",
+      "intent_symbols_exact": ["VALE3.SA", "PETR4.SA"],
+      "intent_parameters_contains": {
+        "currency": "BRL",
+        "exchange": "BOVESPA"
+      },
+      "plan_min_steps": 2,
+      "plan_contains_step_capabilities": ["get_stock_price"]
+    }
+  },
+  {
+    "question": "qual o valor da vale3 e abc",
+    "prompt_contains": ["action 'get_stock_price'"],
+    "expected": {
+      "intent_domain": "finance",
+      "intent_capability": "get_stock_price",
+      "intent_parameters_has_keys": ["symbol"],
+      "plan_min_steps": 1,
+      "plan_contains_step_capabilities": ["get_stock_price"]
+    }
+  },
+  {
+    "question": "qual o valor da vale3, petr4 e itub4",
+    "prompt_contains": ["action 'get_stock_price'"],
+    "expected": {
+      "intent_domain": "finance",
+      "intent_capability": "get_stock_price",
+      "plan_min_steps": 3,
+      "plan_contains_step_capabilities": ["get_stock_price"]
+    }
+  },
+  {
+    "question": "qual o valor da vale3, petr4, bbas3 e itub4",
+    "prompt_contains": ["action 'get_stock_price'"],
+    "expected": {
+      "intent_domain": "finance",
+      "intent_capability": "get_stock_price",
+      "plan_min_steps": 4,
+      "plan_contains_step_capabilities": ["get_stock_price"]
+    }
+  },
+  {
+    "question": "qual o valor da acao da nordea na bolsa da suecia",
+    "prompt_contains": ["action 'get_stock_price'"],
+    "expected": {
+      "intent_domain": "finance",
+      "intent_capability": "get_stock_price",
+      "intent_parameters_contains": {
+        "symbol": "NDA-SE.ST",
+        "currency": "SEK",
+        "exchange": "SFB"
+      },
+      "plan_min_steps": 1,
+      "plan_contains_step_capabilities": ["get_stock_price"]
+    }
+  },
+  {
+    "question": "qual o valor da petro e manda no telegram",
+    "prompt_contains": ["action 'get_stock_price'", "action 'send_telegram_message'"],
+    "expected": {
+      "intent_domain": "finance",
+      "intent_capability": "get_stock_price",
+      "intent_parameters_contains": {
+        "notify": true,
+        "symbol": "PETR4.SA",
+        "currency": "BRL",
+        "exchange": "BOVESPA"
+      },
+      "intent_parameters_not_has_keys": ["symbols"],
+      "plan_min_steps": 2,
+      "plan_contains_step_capabilities": ["get_stock_price", "send_telegram_message"]
+    }
+  },
+  {
+    "question": "qual o valor da vale3 e petro4 e manda no telegram",
+    "prompt_contains": ["action 'get_stock_price'", "action 'send_telegram_message'"],
+    "expected": {
+      "intent_domain": "finance",
+      "intent_capability": "get_stock_price",
+      "intent_parameters_contains": {
+        "notify": true,
+        "currency": "BRL",
+        "exchange": "BOVESPA"
+      },
+      "plan_min_steps": 3,
+      "plan_contains_step_capabilities": ["get_stock_price", "send_telegram_message"]
+    }
+  },
+  {
+    "question": "faz deploy do meu kubernetes em producao",
+    "prompt_contains": ["action 'chat'"],
+    "expected": {
+      "intent_domain": "general",
+      "intent_capability": "chat",
+      "plan_min_steps": 1,
+      "plan_contains_step_capabilities": ["chat"]
+    }
+  }
+]

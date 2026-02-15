@@ -2,6 +2,18 @@
   {
     "index": 1,
     "question": "qual o valor da petro",
+    "expected": {
+      "intent_domain": "finance",
+      "intent_capability": "get_stock_price",
+      "intent_parameters_has_keys": [
+        "symbol"
+      ],
+      "plan_min_steps": 1,
+      "plan_contains_step_capabilities": [
+        "get_stock_price"
+      ],
+      "route_ok": true
+    },
     "intent": {
       "domain": "finance",
       "capability": "get_stock_price",
@@ -47,11 +59,65 @@
       }
     ],
     "route_ok": true,
-    "execute_ok": null
+    "execute_ok": null,
+    "expected_ok": true,
+    "expected_eval": {
+      "ok": true,
+      "failed_checks": [],
+      "checks": [
+        {
+          "name": "intent_domain",
+          "ok": true,
+          "actual": "finance",
+          "expected": "finance"
+        },
+        {
+          "name": "intent_capability",
+          "ok": true,
+          "actual": "get_stock_price",
+          "expected": "get_stock_price"
+        },
+        {
+          "name": "intent_parameters_has_key.symbol",
+          "ok": true,
+          "actual": true,
+          "expected": true
+        },
+        {
+          "name": "plan_min_steps",
+          "ok": true,
+          "actual": 1,
+          "expected": 1
+        },
+        {
+          "name": "plan_contains_step_capability.get_stock_price",
+          "ok": true,
+          "actual": [
+            "get_stock_price"
+          ],
+          "expected": "get_stock_price"
+        },
+        {
+          "name": "route_ok",
+          "ok": true,
+          "actual": true,
+          "expected": true
+        }
+      ]
+    }
   },
   {
     "index": 2,
     "question": "compare fundamentos",
+    "expected": {
+      "intent_domain": "finance",
+      "intent_capability": "compare_fundamentals",
+      "plan_min_steps": 1,
+      "plan_contains_step_capabilities": [
+        "compare_fundamentals"
+      ],
+      "route_ok": true
+    },
     "intent": {
       "domain": "general",
       "capability": "chat",
@@ -93,11 +159,67 @@
       }
     ],
     "route_ok": true,
-    "execute_ok": null
+    "execute_ok": null,
+    "expected_ok": false,
+    "expected_eval": {
+      "ok": false,
+      "failed_checks": [
+        "intent_domain",
+        "intent_capability",
+        "plan_contains_step_capability.compare_fundamentals"
+      ],
+      "checks": [
+        {
+          "name": "intent_domain",
+          "ok": false,
+          "actual": "general",
+          "expected": "finance"
+        },
+        {
+          "name": "intent_capability",
+          "ok": false,
+          "actual": "chat",
+          "expected": "compare_fundamentals"
+        },
+        {
+          "name": "plan_min_steps",
+          "ok": true,
+          "actual": 1,
+          "expected": 1
+        },
+        {
+          "name": "plan_contains_step_capability.compare_fundamentals",
+          "ok": false,
+          "actual": [
+            "chat"
+          ],
+          "expected": "compare_fundamentals"
+        },
+        {
+          "name": "route_ok",
+          "ok": true,
+          "actual": true,
+          "expected": true
+        }
+      ]
+    }
   },
   {
     "index": 3,
     "question": "qual o valor da vale3 e petro4",
+    "expected": {
+      "intent_domain": "finance",
+      "intent_capability": "get_stock_price",
+      "intent_symbols_exact": [
+        "VALE3.SA",
+        "PETR4.SA"
+      ],
+      "plan_min_steps": 2,
+      "plan_contains_step_capabilities": [
+        "get_stock_price"
+      ],
+      "route_ok": true
+    },
     "intent": {
       "domain": "finance",
       "capability": "get_stock_price",
@@ -171,11 +293,75 @@
       }
     ],
     "route_ok": true,
-    "execute_ok": null
+    "execute_ok": null,
+    "expected_ok": true,
+    "expected_eval": {
+      "ok": true,
+      "failed_checks": [],
+      "checks": [
+        {
+          "name": "intent_domain",
+          "ok": true,
+          "actual": "finance",
+          "expected": "finance"
+        },
+        {
+          "name": "intent_capability",
+          "ok": true,
+          "actual": "get_stock_price",
+          "expected": "get_stock_price"
+        },
+        {
+          "name": "intent_symbols_exact",
+          "ok": true,
+          "actual": [
+            "VALE3.SA",
+            "PETR4.SA"
+          ],
+          "expected": [
+            "VALE3.SA",
+            "PETR4.SA"
+          ]
+        },
+        {
+          "name": "plan_min_steps",
+          "ok": true,
+          "actual": 2,
+          "expected": 2
+        },
+        {
+          "name": "plan_contains_step_capability.get_stock_price",
+          "ok": true,
+          "actual": [
+            "get_stock_price",
+            "get_stock_price"
+          ],
+          "expected": "get_stock_price"
+        },
+        {
+          "name": "route_ok",
+          "ok": true,
+          "actual": true,
+          "expected": true
+        }
+      ]
+    }
   },
   {
     "index": 4,
     "question": "qual o valor da vale3 e abc",
+    "expected": {
+      "intent_domain": "finance",
+      "intent_capability": "get_stock_price",
+      "intent_parameters_has_keys": [
+        "symbol"
+      ],
+      "plan_min_steps": 1,
+      "plan_contains_step_capabilities": [
+        "get_stock_price"
+      ],
+      "route_ok": true
+    },
     "intent": {
       "domain": "finance",
       "capability": "get_stock_price",
@@ -249,11 +435,66 @@
       }
     ],
     "route_ok": true,
-    "execute_ok": null
+    "execute_ok": null,
+    "expected_ok": true,
+    "expected_eval": {
+      "ok": true,
+      "failed_checks": [],
+      "checks": [
+        {
+          "name": "intent_domain",
+          "ok": true,
+          "actual": "finance",
+          "expected": "finance"
+        },
+        {
+          "name": "intent_capability",
+          "ok": true,
+          "actual": "get_stock_price",
+          "expected": "get_stock_price"
+        },
+        {
+          "name": "intent_parameters_has_key.symbol",
+          "ok": true,
+          "actual": true,
+          "expected": true
+        },
+        {
+          "name": "plan_min_steps",
+          "ok": true,
+          "actual": 2,
+          "expected": 1
+        },
+        {
+          "name": "plan_contains_step_capability.get_stock_price",
+          "ok": true,
+          "actual": [
+            "get_stock_price",
+            "get_stock_price"
+          ],
+          "expected": "get_stock_price"
+        },
+        {
+          "name": "route_ok",
+          "ok": true,
+          "actual": true,
+          "expected": true
+        }
+      ]
+    }
   },
   {
     "index": 5,
     "question": "qual o valor da vale3, petr4 e itub4",
+    "expected": {
+      "intent_domain": "finance",
+      "intent_capability": "get_stock_price",
+      "plan_min_steps": 3,
+      "plan_contains_step_capabilities": [
+        "get_stock_price"
+      ],
+      "route_ok": true
+    },
     "intent": {
       "domain": "finance",
       "capability": "get_stock_price",
@@ -352,11 +593,61 @@
       }
     ],
     "route_ok": true,
-    "execute_ok": null
+    "execute_ok": null,
+    "expected_ok": true,
+    "expected_eval": {
+      "ok": true,
+      "failed_checks": [],
+      "checks": [
+        {
+          "name": "intent_domain",
+          "ok": true,
+          "actual": "finance",
+          "expected": "finance"
+        },
+        {
+          "name": "intent_capability",
+          "ok": true,
+          "actual": "get_stock_price",
+          "expected": "get_stock_price"
+        },
+        {
+          "name": "plan_min_steps",
+          "ok": true,
+          "actual": 3,
+          "expected": 3
+        },
+        {
+          "name": "plan_contains_step_capability.get_stock_price",
+          "ok": true,
+          "actual": [
+            "get_stock_price",
+            "get_stock_price",
+            "get_stock_price"
+          ],
+          "expected": "get_stock_price"
+        },
+        {
+          "name": "route_ok",
+          "ok": true,
+          "actual": true,
+          "expected": true
+        }
+      ]
+    }
   },
   {
     "index": 6,
     "question": "qual o valor da vale3, petr4, bbas3 e itub4",
+    "expected": {
+      "intent_domain": "finance",
+      "intent_capability": "get_stock_price",
+      "plan_min_steps": 4,
+      "plan_contains_step_capabilities": [
+        "get_stock_price"
+      ],
+      "route_ok": true
+    },
     "intent": {
       "domain": "finance",
       "capability": "get_stock_price",
@@ -480,11 +771,65 @@
       }
     ],
     "route_ok": true,
-    "execute_ok": null
+    "execute_ok": null,
+    "expected_ok": true,
+    "expected_eval": {
+      "ok": true,
+      "failed_checks": [],
+      "checks": [
+        {
+          "name": "intent_domain",
+          "ok": true,
+          "actual": "finance",
+          "expected": "finance"
+        },
+        {
+          "name": "intent_capability",
+          "ok": true,
+          "actual": "get_stock_price",
+          "expected": "get_stock_price"
+        },
+        {
+          "name": "plan_min_steps",
+          "ok": true,
+          "actual": 4,
+          "expected": 4
+        },
+        {
+          "name": "plan_contains_step_capability.get_stock_price",
+          "ok": true,
+          "actual": [
+            "get_stock_price",
+            "get_stock_price",
+            "get_stock_price",
+            "get_stock_price"
+          ],
+          "expected": "get_stock_price"
+        },
+        {
+          "name": "route_ok",
+          "ok": true,
+          "actual": true,
+          "expected": true
+        }
+      ]
+    }
   },
   {
     "index": 7,
     "question": "qual o valor da acao da nordea na bolsa da suecia",
+    "expected": {
+      "intent_domain": "finance",
+      "intent_capability": "get_stock_price",
+      "intent_parameters_has_keys": [
+        "symbol"
+      ],
+      "plan_min_steps": 1,
+      "plan_contains_step_capabilities": [
+        "get_stock_price"
+      ],
+      "route_ok": true
+    },
     "intent": {
       "domain": "finance",
       "capability": "get_stock_price",
@@ -530,20 +875,77 @@
       }
     ],
     "route_ok": true,
-    "execute_ok": null
+    "execute_ok": null,
+    "expected_ok": true,
+    "expected_eval": {
+      "ok": true,
+      "failed_checks": [],
+      "checks": [
+        {
+          "name": "intent_domain",
+          "ok": true,
+          "actual": "finance",
+          "expected": "finance"
+        },
+        {
+          "name": "intent_capability",
+          "ok": true,
+          "actual": "get_stock_price",
+          "expected": "get_stock_price"
+        },
+        {
+          "name": "intent_parameters_has_key.symbol",
+          "ok": true,
+          "actual": true,
+          "expected": true
+        },
+        {
+          "name": "plan_min_steps",
+          "ok": true,
+          "actual": 1,
+          "expected": 1
+        },
+        {
+          "name": "plan_contains_step_capability.get_stock_price",
+          "ok": true,
+          "actual": [
+            "get_stock_price"
+          ],
+          "expected": "get_stock_price"
+        },
+        {
+          "name": "route_ok",
+          "ok": true,
+          "actual": true,
+          "expected": true
+        }
+      ]
+    }
   },
   {
     "index": 8,
     "question": "qual o valor da petro e manda no telegram",
+    "expected": {
+      "intent_domain": "finance",
+      "intent_capability": "get_stock_price",
+      "intent_parameters_contains": {
+        "notify": true
+      },
+      "intent_parameters_not_has_keys": [
+        "symbols"
+      ],
+      "plan_min_steps": 2,
+      "plan_contains_step_capabilities": [
+        "get_stock_price",
+        "send_telegram_message"
+      ],
+      "route_ok": true
+    },
     "intent": {
       "domain": "finance",
       "capability": "get_stock_price",
       "confidence": 0.95,
       "parameters": {
-        "symbols": [
-          "PETR4.SA",
-          "MANDA"
-        ],
         "symbol": "PETR4.SA",
         "exchange": null,
         "currency": "USD",
@@ -559,34 +961,34 @@
           "domain": "finance",
           "capability": "get_stock_price",
           "params": {
+            "symbol": "PETR4.SA",
             "exchange": null,
             "currency": "USD",
-            "notify": true,
-            "symbol": "PETR4.SA"
+            "notify": true
           },
           "depends_on": [],
           "required": true,
-          "output_key": "price_1",
+          "output_key": "primary",
           "timeout_seconds": null
         },
         {
           "id": 2,
-          "domain": "finance",
-          "capability": "get_stock_price",
+          "domain": "communication",
+          "capability": "send_telegram_message",
           "params": {
-            "exchange": null,
-            "currency": "USD",
-            "notify": true,
-            "symbol": "MANDA"
+            "chat_id": "${ENV:TELEGRAM_DEFAULT_CHAT_ID}",
+            "message": "${1.explanation}"
           },
-          "depends_on": [],
-          "required": true,
-          "output_key": "price_2",
+          "depends_on": [
+            1
+          ],
+          "required": false,
+          "output_key": "notification",
           "timeout_seconds": null
         }
       ],
       "combine_mode": "report",
-      "max_concurrency": 2
+      "max_concurrency": 4
     },
     "route": [
       {
@@ -601,21 +1003,97 @@
       },
       {
         "id": 2,
-        "domain": "finance",
-        "capability": "get_stock_price",
+        "domain": "communication",
+        "capability": "send_telegram_message",
         "reachable": true,
         "resolution": "capability",
         "handler_class": "HttpDomainHandler",
-        "depends_on": [],
-        "required": true
+        "depends_on": [
+          1
+        ],
+        "required": false
       }
     ],
     "route_ok": true,
-    "execute_ok": null
+    "execute_ok": null,
+    "expected_ok": true,
+    "expected_eval": {
+      "ok": true,
+      "failed_checks": [],
+      "checks": [
+        {
+          "name": "intent_domain",
+          "ok": true,
+          "actual": "finance",
+          "expected": "finance"
+        },
+        {
+          "name": "intent_capability",
+          "ok": true,
+          "actual": "get_stock_price",
+          "expected": "get_stock_price"
+        },
+        {
+          "name": "intent_parameters_contains.notify",
+          "ok": true,
+          "actual": true,
+          "expected": true
+        },
+        {
+          "name": "intent_parameters_not_has_key.symbols",
+          "ok": true,
+          "actual": false,
+          "expected": false
+        },
+        {
+          "name": "plan_min_steps",
+          "ok": true,
+          "actual": 2,
+          "expected": 2
+        },
+        {
+          "name": "plan_contains_step_capability.get_stock_price",
+          "ok": true,
+          "actual": [
+            "get_stock_price",
+            "send_telegram_message"
+          ],
+          "expected": "get_stock_price"
+        },
+        {
+          "name": "plan_contains_step_capability.send_telegram_message",
+          "ok": true,
+          "actual": [
+            "get_stock_price",
+            "send_telegram_message"
+          ],
+          "expected": "send_telegram_message"
+        },
+        {
+          "name": "route_ok",
+          "ok": true,
+          "actual": true,
+          "expected": true
+        }
+      ]
+    }
   },
   {
     "index": 9,
     "question": "qual o valor da vale3 e petro4 e manda no telegram",
+    "expected": {
+      "intent_domain": "finance",
+      "intent_capability": "get_stock_price",
+      "intent_parameters_contains": {
+        "notify": true
+      },
+      "plan_min_steps": 2,
+      "plan_contains_step_capabilities": [
+        "get_stock_price",
+        "send_telegram_message"
+      ],
+      "route_ok": true
+    },
     "intent": {
       "domain": "finance",
       "capability": "get_stock_price",
@@ -623,8 +1101,7 @@
       "parameters": {
         "symbols": [
           "VALE3.SA",
-          "PETR4.SA",
-          "MANDA"
+          "PETR4.SA"
         ],
         "symbol": "VALE3.SA",
         "exchange": null,
@@ -665,25 +1142,10 @@
           "required": true,
           "output_key": "price_2",
           "timeout_seconds": null
-        },
-        {
-          "id": 3,
-          "domain": "finance",
-          "capability": "get_stock_price",
-          "params": {
-            "exchange": null,
-            "currency": "USD",
-            "notify": true,
-            "symbol": "MANDA"
-          },
-          "depends_on": [],
-          "required": true,
-          "output_key": "price_3",
-          "timeout_seconds": null
         }
       ],
       "combine_mode": "report",
-      "max_concurrency": 3
+      "max_concurrency": 2
     },
     "route": [
       {
@@ -705,24 +1167,80 @@
         "handler_class": "HttpDomainHandler",
         "depends_on": [],
         "required": true
-      },
-      {
-        "id": 3,
-        "domain": "finance",
-        "capability": "get_stock_price",
-        "reachable": true,
-        "resolution": "capability",
-        "handler_class": "HttpDomainHandler",
-        "depends_on": [],
-        "required": true
       }
     ],
     "route_ok": true,
-    "execute_ok": null
+    "execute_ok": null,
+    "expected_ok": false,
+    "expected_eval": {
+      "ok": false,
+      "failed_checks": [
+        "plan_contains_step_capability.send_telegram_message"
+      ],
+      "checks": [
+        {
+          "name": "intent_domain",
+          "ok": true,
+          "actual": "finance",
+          "expected": "finance"
+        },
+        {
+          "name": "intent_capability",
+          "ok": true,
+          "actual": "get_stock_price",
+          "expected": "get_stock_price"
+        },
+        {
+          "name": "intent_parameters_contains.notify",
+          "ok": true,
+          "actual": true,
+          "expected": true
+        },
+        {
+          "name": "plan_min_steps",
+          "ok": true,
+          "actual": 2,
+          "expected": 2
+        },
+        {
+          "name": "plan_contains_step_capability.get_stock_price",
+          "ok": true,
+          "actual": [
+            "get_stock_price",
+            "get_stock_price"
+          ],
+          "expected": "get_stock_price"
+        },
+        {
+          "name": "plan_contains_step_capability.send_telegram_message",
+          "ok": false,
+          "actual": [
+            "get_stock_price",
+            "get_stock_price"
+          ],
+          "expected": "send_telegram_message"
+        },
+        {
+          "name": "route_ok",
+          "ok": true,
+          "actual": true,
+          "expected": true
+        }
+      ]
+    }
   },
   {
     "index": 10,
     "question": "faz deploy do meu kubernetes em producao",
+    "expected": {
+      "intent_domain": "general",
+      "intent_capability": "chat",
+      "plan_min_steps": 1,
+      "plan_contains_step_capabilities": [
+        "chat"
+      ],
+      "route_ok": true
+    },
     "intent": {
       "domain": "general",
       "capability": "chat",
@@ -764,6 +1282,45 @@
       }
     ],
     "route_ok": true,
-    "execute_ok": null
+    "execute_ok": null,
+    "expected_ok": true,
+    "expected_eval": {
+      "ok": true,
+      "failed_checks": [],
+      "checks": [
+        {
+          "name": "intent_domain",
+          "ok": true,
+          "actual": "general",
+          "expected": "general"
+        },
+        {
+          "name": "intent_capability",
+          "ok": true,
+          "actual": "chat",
+          "expected": "chat"
+        },
+        {
+          "name": "plan_min_steps",
+          "ok": true,
+          "actual": 1,
+          "expected": 1
+        },
+        {
+          "name": "plan_contains_step_capability.chat",
+          "ok": true,
+          "actual": [
+            "chat"
+          ],
+          "expected": "chat"
+        },
+        {
+          "name": "route_ok",
+          "ok": true,
+          "actual": true,
+          "expected": true
+        }
+      ]
+    }
   }
 ]
