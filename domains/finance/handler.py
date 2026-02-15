@@ -18,10 +18,12 @@ from typing import Any
 from shared.models import Decision, DomainOutput, ExecutionContext, IntentOutput
 from domains.finance.context import ContextResolver
 from domains.finance.core import StrategyCore
+from domains.finance.symbol_normalizer import SymbolNormalizer
+from domains.finance.manifest_loader import ManifestLoader
 from skills.gateway import SkillGateway
 from domains.finance.schemas import (
-    TopGainersInput, TopLosersInput, StockPriceInput, 
-    HistoricalDataInput, StockScreenerInput, 
+    TopGainersInput, TopLosersInput, StockPriceInput,
+    HistoricalDataInput, StockScreenerInput,
     TechnicalSignalsInput, CompareFundamentalsInput
 )
 from pydantic import ValidationError
@@ -33,32 +35,26 @@ logger = logging.getLogger(__name__)
 class FinanceDomainHandler:
     """Finance domain handler — orchestrates context, skills, and strategy."""
 
-    def __init__(self, skill_gateway: SkillGateway, registry: Any = None):
+    def __init__(
+        self,
+        skill_gateway: SkillGateway,
+        registry: Any = None,
+        symbol_normalizer: SymbolNormalizer | None = None,
+        finance_server_url: str = "http://localhost:8001",
+    ):
         self.context_resolver = ContextResolver()
         self.strategy_core = StrategyCore()
         self.skill_gateway = skill_gateway
         self.registry = registry
-        # Keep symbol_aliases in sync with finance/server.py SYMBOL_ALIASES
-        self.symbol_aliases: dict[str, str] = {
-            "PETRO": "PETR4.SA",
-            "PETRO4": "PETR4.SA",
-            "PETROBRAS": "PETR4.SA",
-            "VALE": "VALE3.SA",
-            "ITAU": "ITUB4.SA",
-            "ITAU UNIBANCO": "ITUB4.SA",
-            "BBAS": "BBAS3.SA",
-            "BANCO DO BRASIL": "BBAS3.SA",
-            "MGLU": "MGLU3.SA",
-            "MAGAZINE LUIZA": "MGLU3.SA",
-            "BBDC": "BBDC4.SA",
-            "BRADESCO": "BBDC4.SA",
-            "AAPL": "AAPL",
-            "TSLA": "TSLA",
-            "MSFT": "MSFT",
-            "NVDA": "NVDA",
-            "NORDEA": "NDA-SE.ST",
-            "TELIA": "TELIA.ST",
-        }
+
+        # Initialize symbol normalizer (metadata-driven aliases, no hardcoding)
+        if symbol_normalizer:
+            self._symbol_normalizer = symbol_normalizer
+        else:
+            # Load aliases from manifest, fallback to empty dict
+            loader = ManifestLoader(finance_server_url)
+            aliases = loader.fetch_symbol_aliases()
+            self._symbol_normalizer = SymbolNormalizer(aliases=aliases)
 
     async def execute(self, intent: IntentOutput) -> DomainOutput:
         """
@@ -682,18 +678,8 @@ class FinanceDomainHandler:
         return found_symbols
 
     def _resolve_symbol_alias(self, raw_symbol: str) -> str | None:
-        normalized = (raw_symbol or "").strip().upper()
-        if not normalized:
-            return None
-
-        direct = self.symbol_aliases.get(normalized)
-        if direct:
-            return direct
-
-        compact = re.sub(r"[^A-Z0-9]", "", normalized)
-        if compact != normalized:
-            return self.symbol_aliases.get(compact)
-        return None
+        """Resolve symbol using metadata-driven normalizer (no hardcoding)."""
+        return self._symbol_normalizer.normalize(raw_symbol)
 
     def _flow_resolve_symbol_list(self, step: dict[str, Any], params: dict[str, Any], original_query: str = "") -> dict[str, Any] | DomainOutput:
         field = str(step.get("param", "symbols")).strip() or "symbols"
