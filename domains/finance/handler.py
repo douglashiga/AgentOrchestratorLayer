@@ -18,7 +18,7 @@ from typing import Any
 from shared.models import Decision, DomainOutput, ExecutionContext, IntentOutput
 from domains.finance.context import ContextResolver
 from domains.finance.core import StrategyCore
-from domains.finance.symbol_normalizer import SymbolNormalizer
+from domains.finance.symbol_resolver import SymbolResolver
 from domains.finance.manifest_loader import ManifestLoader
 from skills.gateway import SkillGateway
 from domains.finance.schemas import (
@@ -39,7 +39,8 @@ class FinanceDomainHandler:
         self,
         skill_gateway: SkillGateway,
         registry: Any = None,
-        symbol_normalizer: SymbolNormalizer | None = None,
+        symbol_resolver: SymbolResolver | None = None,
+        model_selector: Any = None,
         finance_server_url: str = "http://localhost:8001",
     ):
         self.context_resolver = ContextResolver()
@@ -47,14 +48,19 @@ class FinanceDomainHandler:
         self.skill_gateway = skill_gateway
         self.registry = registry
 
-        # Initialize symbol normalizer (metadata-driven aliases, no hardcoding)
-        if symbol_normalizer:
-            self._symbol_normalizer = symbol_normalizer
+        # Initialize symbol resolver (metadata-driven aliases with LLM fallback)
+        if symbol_resolver:
+            self._symbol_resolver = symbol_resolver
         else:
             # Load aliases from manifest, fallback to empty dict
             loader = ManifestLoader(finance_server_url)
             aliases = loader.fetch_symbol_aliases()
-            self._symbol_normalizer = SymbolNormalizer(aliases=aliases)
+            self._symbol_resolver = SymbolResolver(
+                aliases=aliases,
+                skill_gateway=skill_gateway,
+                model_selector=model_selector,
+                enable_llm=bool(model_selector),
+            )
 
     async def execute(self, intent: IntentOutput) -> DomainOutput:
         """
@@ -678,8 +684,9 @@ class FinanceDomainHandler:
         return found_symbols
 
     def _resolve_symbol_alias(self, raw_symbol: str) -> str | None:
-        """Resolve symbol using metadata-driven normalizer (no hardcoding)."""
-        return self._symbol_normalizer.normalize(raw_symbol)
+        """Resolve symbol using metadata-driven resolver (no hardcoding)."""
+        result = self._symbol_resolver.resolve(raw_symbol)
+        return result.symbol if result else None
 
     def _flow_resolve_symbol_list(self, step: dict[str, Any], params: dict[str, Any], original_query: str = "") -> dict[str, Any] | DomainOutput:
         field = str(step.get("param", "symbols")).strip() or "symbols"

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from domains.finance.handler import FinanceDomainHandler
-from domains.finance.symbol_normalizer import SymbolNormalizer
+from domains.finance.symbol_resolver import SymbolResolver
 from shared.models import Decision
 
 
@@ -57,8 +57,8 @@ def test_symbol_resolution_returns_clarification_for_ambiguous_match():
             },
         }
     )
-    normalizer = SymbolNormalizer(aliases=TEST_SYMBOL_ALIASES)
-    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_normalizer=normalizer)
+    resolver = SymbolResolver(aliases=TEST_SYMBOL_ALIASES)
+    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_resolver=resolver)
     out = handler._resolve_symbol_value("vale2", step={"search_capability": "search_symbol"})
     assert getattr(out, "status", "") == "clarification"
     assert "VALE3.SA" in out.explanation
@@ -66,8 +66,8 @@ def test_symbol_resolution_returns_clarification_for_ambiguous_match():
 
 def test_symbol_resolution_uses_alias_for_plain_company_name():
     gateway = DummyGateway({"success": False, "error": "should_not_be_called"})
-    normalizer = SymbolNormalizer(aliases=TEST_SYMBOL_ALIASES)
-    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_normalizer=normalizer)
+    resolver = SymbolResolver(aliases=TEST_SYMBOL_ALIASES)
+    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_resolver=resolver)
     out = handler._resolve_symbol_value("vale", step={"search_capability": "search_symbol"})
     assert out == "VALE3.SA"
 
@@ -83,8 +83,8 @@ def test_symbol_resolution_picks_single_match():
             },
         }
     )
-    normalizer = SymbolNormalizer(aliases=TEST_SYMBOL_ALIASES)
-    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_normalizer=normalizer)
+    resolver = SymbolResolver(aliases=TEST_SYMBOL_ALIASES)
+    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_resolver=resolver)
     out = handler._resolve_symbol_value("petrobras", step={"search_capability": "search_symbol"})
     assert out == "PETR4.SA"
 
@@ -96,8 +96,8 @@ def test_symbol_resolution_returns_clarification_when_lookup_fails():
             "error": "network",
         }
     )
-    normalizer = SymbolNormalizer(aliases=TEST_SYMBOL_ALIASES)
-    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_normalizer=normalizer)
+    resolver = SymbolResolver(aliases=TEST_SYMBOL_ALIASES)
+    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_resolver=resolver)
     # Note: PETRO4 is now resolved via alias to PETR4.SA without calling the gateway
     # So we use an unknown symbol that won't have an alias
     out = handler._resolve_symbol_value("UNKNOWNSYM123", step={"search_capability": "search_symbol"})
@@ -105,15 +105,15 @@ def test_symbol_resolution_returns_clarification_when_lookup_fails():
 
 
 def test_infer_symbol_from_query_text_b3_base():
-    normalizer = SymbolNormalizer(aliases=TEST_SYMBOL_ALIASES)
-    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None, symbol_normalizer=normalizer)
+    resolver = SymbolResolver(aliases=TEST_SYMBOL_ALIASES)
+    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None, symbol_resolver=resolver)
     inferred = handler._infer_symbol_from_query_text("qual o valor da petro4 hoje?")
     assert inferred == "PETR4.SA"
 
 
 def test_infer_symbol_from_query_text_plain_company_token():
-    normalizer = SymbolNormalizer(aliases=TEST_SYMBOL_ALIASES)
-    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None, symbol_normalizer=normalizer)
+    resolver = SymbolResolver(aliases=TEST_SYMBOL_ALIASES)
+    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None, symbol_resolver=resolver)
     inferred = handler._infer_symbol_from_query_text("me diga o valor da petro e manda no telegram")
     assert inferred == "PETRO"
 
@@ -131,8 +131,8 @@ def test_pre_flow_resolves_inferred_plain_token_via_search():
             }
         }
     )
-    normalizer = SymbolNormalizer(aliases=TEST_SYMBOL_ALIASES)
-    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_normalizer=normalizer)
+    resolver = SymbolResolver(aliases=TEST_SYMBOL_ALIASES)
+    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_resolver=resolver)
     metadata = {
         "schema": {
             "type": "object",
@@ -152,8 +152,8 @@ def test_pre_flow_resolves_inferred_plain_token_via_search():
 
 
 def test_get_flow_steps_marks_required_from_schema_even_for_explicit_flow():
-    normalizer = SymbolNormalizer(aliases=TEST_SYMBOL_ALIASES)
-    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None, symbol_normalizer=normalizer)
+    resolver = SymbolResolver(aliases=TEST_SYMBOL_ALIASES)
+    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None, symbol_resolver=resolver)
     metadata = {
         "schema": {
             "type": "object",
@@ -181,8 +181,8 @@ def test_stock_price_cache_fallback_returns_success():
             }
         }
     )
-    normalizer = SymbolNormalizer(aliases=TEST_SYMBOL_ALIASES)
-    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_normalizer=normalizer)
+    resolver = SymbolResolver(aliases=TEST_SYMBOL_ALIASES)
+    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_resolver=resolver)
 
     class Ctx:
         currency = "BRL"
@@ -199,8 +199,8 @@ def test_stock_price_cache_fallback_returns_success():
 
 
 def test_validate_required_params_from_schema_returns_clarification():
-    normalizer = SymbolNormalizer(aliases=TEST_SYMBOL_ALIASES)
-    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None, symbol_normalizer=normalizer)
+    resolver = SymbolResolver(aliases=TEST_SYMBOL_ALIASES)
+    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None, symbol_resolver=resolver)
     metadata = {
         "schema": {
             "type": "object",
@@ -222,8 +222,8 @@ def test_validate_required_params_from_schema_returns_clarification():
 
 
 def test_operational_error_is_mapped_to_clarification():
-    normalizer = SymbolNormalizer(aliases=TEST_SYMBOL_ALIASES)
-    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None, symbol_normalizer=normalizer)
+    resolver = SymbolResolver(aliases=TEST_SYMBOL_ALIASES)
+    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None, symbol_resolver=resolver)
     decision = Decision(
         action="get_stock_price",
         success=False,
@@ -237,8 +237,8 @@ def test_operational_error_is_mapped_to_clarification():
 
 def test_infer_multiple_symbols_from_query_text():
     """Test extraction of multiple symbols from a single query."""
-    normalizer = SymbolNormalizer(aliases=TEST_SYMBOL_ALIASES)
-    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None, symbol_normalizer=normalizer)
+    resolver = SymbolResolver(aliases=TEST_SYMBOL_ALIASES)
+    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None, symbol_resolver=resolver)
 
     # Test 3-symbol query: PETR4, vale3 (lowercase), and itau (plain token)
     # Note: ITAU is resolved to ITUB4.SA via alias, not kept as ITAU
@@ -251,8 +251,8 @@ def test_infer_multiple_symbols_from_query_text():
 
 def test_infer_multiple_symbols_returns_list():
     """Test that _infer_symbols_from_query_text always returns a list."""
-    normalizer = SymbolNormalizer(aliases=TEST_SYMBOL_ALIASES)
-    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None, symbol_normalizer=normalizer)
+    resolver = SymbolResolver(aliases=TEST_SYMBOL_ALIASES)
+    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None, symbol_resolver=resolver)
 
     result = handler._infer_symbols_from_query_text("qual o valor da PETR4 e da VALE3?")
     assert isinstance(result, list)
@@ -263,8 +263,8 @@ def test_infer_multiple_symbols_returns_list():
 
 def test_infer_symbols_filters_stopwords():
     """Test that stopwords are filtered from symbol extraction."""
-    normalizer = SymbolNormalizer(aliases=TEST_SYMBOL_ALIASES)
-    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None, symbol_normalizer=normalizer)
+    resolver = SymbolResolver(aliases=TEST_SYMBOL_ALIASES)
+    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None, symbol_resolver=resolver)
 
     # "COMPARE", "VALOR", "QUAL" should be filtered out
     symbols = handler._infer_symbols_from_query_text("compare petr4, vale3, itau e bradesco")
@@ -277,8 +277,8 @@ def test_infer_symbols_filters_stopwords():
 
 def test_flow_resolve_symbol_list_infers_from_query():
     """Test that _flow_resolve_symbol_list infers symbols from query when not provided."""
-    normalizer = SymbolNormalizer(aliases=TEST_SYMBOL_ALIASES)
-    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None, symbol_normalizer=normalizer)
+    resolver = SymbolResolver(aliases=TEST_SYMBOL_ALIASES)
+    handler = FinanceDomainHandler(skill_gateway=DummyGateway({"success": True, "data": {}}), registry=None, symbol_resolver=resolver)
 
     # Call with empty symbols parameter and original_query
     result = handler._flow_resolve_symbol_list(

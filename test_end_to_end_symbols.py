@@ -3,7 +3,7 @@ End-to-end test simulating the full query processing pipeline.
 """
 
 from domains.finance.handler import FinanceDomainHandler
-from domains.finance.symbol_normalizer import SymbolNormalizer
+from domains.finance.symbol_resolver import SymbolResolver
 
 # Standard symbol aliases for testing
 TEST_SYMBOL_ALIASES = {
@@ -55,8 +55,8 @@ class MockGateway:
 def test_end_to_end_with_comma():
     """Test full pipeline with comma."""
     gateway = MockGateway()
-    normalizer = SymbolNormalizer(aliases=TEST_SYMBOL_ALIASES)
-    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_normalizer=normalizer)
+    resolver = SymbolResolver(aliases=TEST_SYMBOL_ALIASES)
+    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_resolver=resolver)
     
     query = "qual o valor da petr4, TELIA.ST e vale3?"
     symbols = handler._infer_symbols_from_query_text(query)
@@ -74,8 +74,8 @@ def test_end_to_end_with_comma():
 def test_end_to_end_without_comma():
     """Test full pipeline without comma."""
     gateway = MockGateway()
-    normalizer = SymbolNormalizer(aliases=TEST_SYMBOL_ALIASES)
-    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_normalizer=normalizer)
+    resolver = SymbolResolver(aliases=TEST_SYMBOL_ALIASES)
+    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_resolver=resolver)
     
     query = "qual o valor da petr4  TELIA.ST e vale3?"
     symbols = handler._infer_symbols_from_query_text(query)
@@ -93,8 +93,8 @@ def test_end_to_end_without_comma():
 def test_flow_resolve_with_comma():
     """Test symbol resolution flow with comma."""
     gateway = MockGateway()
-    normalizer = SymbolNormalizer(aliases=TEST_SYMBOL_ALIASES)
-    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_normalizer=normalizer)
+    resolver = SymbolResolver(aliases=TEST_SYMBOL_ALIASES)
+    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_resolver=resolver)
     
     result = handler._flow_resolve_symbol_list(
         step={"param": "symbols", "search_capability": "search_symbol"},
@@ -113,8 +113,8 @@ def test_flow_resolve_with_comma():
 def test_flow_resolve_without_comma():
     """Test symbol resolution flow without comma."""
     gateway = MockGateway()
-    normalizer = SymbolNormalizer(aliases=TEST_SYMBOL_ALIASES)
-    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_normalizer=normalizer)
+    resolver = SymbolResolver(aliases=TEST_SYMBOL_ALIASES)
+    handler = FinanceDomainHandler(skill_gateway=gateway, registry=None, symbol_resolver=resolver)
     
     result = handler._flow_resolve_symbol_list(
         step={"param": "symbols", "search_capability": "search_symbol"},
