@@ -118,9 +118,28 @@ services:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     environment:
+      # Auth and Core
       - WEBUI_AUTH=False
+      - ENABLE_SIGNUP=False
+
+      # Backend API Configuration
       - OPENAI_API_BASE_URL=${OPENAI_API_BASE_URL:-http://agent-api:8010/v1}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-sk-local-dev}
+
+      # LLM Configuration
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+
+      # UI and Features
+      - ENABLE_IMAGE_GENERATION=False
+      - ENABLE_MODELS_FILTER=True
+      - ENABLE_MODEL_FILTERING=True
+      - SHOW_ADMIN_DETAILS=False
+
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+      # Optional: Disable telemetry
+      - DO_NOT_TRACK=True
     ports:
       - "3000:8080"
     volumes:
@@ -129,6 +148,11 @@ services:
       - agent-api
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+networks:
+  default:
+    name: agent-orchestrator
+    driver: bridge
 
 volumes:
   db-data:
