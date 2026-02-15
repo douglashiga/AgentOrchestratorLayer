@@ -86,7 +86,10 @@ def manifest() -> dict[str, Any]:
         "capabilities": [
             {
                 "name": "send_telegram_message",
-                "description": "Send a Telegram message to a chat/user/group id.",
+                "description": (
+                    "Send a Telegram message. Use when user asks to notify/send/share a previous result "
+                    "(e.g., 'envie no telegram', 'manda no telegram')."
+                ),
                 "schema": {
                     "type": "object",
                     "properties": {
@@ -99,6 +102,26 @@ def manifest() -> dict[str, Any]:
                 "metadata": {
                     "requires_auth": True,
                     "channel": "telegram",
+                    "parameter_specs": {
+                        "chat_id": {
+                            "type": "string",
+                            "required": False,
+                            "description": "Telegram target chat or user id.",
+                            "examples": ["123456789", "-1001234567890"],
+                            "default": "${ENV:TELEGRAM_DEFAULT_CHAT_ID}",
+                        },
+                        "message": {
+                            "type": "string",
+                            "required": True,
+                            "description": "Text to send. If omitted in follow-up mode, use previous step explanation.",
+                            "examples": ["Preço da PETR4: R$ 37,10"],
+                        },
+                        "parse_mode": {
+                            "type": "string",
+                            "required": False,
+                            "enum": ["Markdown", "HTML"],
+                        },
+                    },
                     "composition": {
                         "role": "notifier",
                         "priority": 100,
@@ -117,7 +140,10 @@ def manifest() -> dict[str, Any]:
             },
             {
                 "name": "send_telegram_group_message",
-                "description": "Send a Telegram message to a group (group_id/chat_id).",
+                "description": (
+                    "Send a Telegram message to a group/channel. Use when user explicitly asks to send "
+                    "output to Telegram groups/channels."
+                ),
                 "schema": {
                     "type": "object",
                     "properties": {
@@ -131,6 +157,32 @@ def manifest() -> dict[str, Any]:
                 "metadata": {
                     "requires_auth": True,
                     "channel": "telegram",
+                    "parameter_specs": {
+                        "group_id": {
+                            "type": "string",
+                            "required": False,
+                            "description": "Telegram group/channel id.",
+                            "examples": ["-1001234567890"],
+                            "default": "${ENV:TELEGRAM_DEFAULT_CHAT_ID}",
+                        },
+                        "chat_id": {
+                            "type": "string",
+                            "required": False,
+                            "description": "Alias of group_id for compatibility.",
+                            "examples": ["-1001234567890"],
+                        },
+                        "message": {
+                            "type": "string",
+                            "required": True,
+                            "description": "Text to send to group/channel.",
+                            "examples": ["Resumo diário enviado."],
+                        },
+                        "parse_mode": {
+                            "type": "string",
+                            "required": False,
+                            "enum": ["Markdown", "HTML"],
+                        },
+                    },
                     "composition": {
                         "role": "notifier",
                         "priority": 90,

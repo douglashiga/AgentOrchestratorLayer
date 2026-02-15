@@ -258,6 +258,10 @@ class RegistryLoader:
         normalized.setdefault("domain", domain_name)
         normalized.setdefault("description", description)
         normalized["schema"] = schema if isinstance(schema, dict) else {}
+        normalized["parameter_specs"] = self._normalize_parameter_specs(
+            schema=schema if isinstance(schema, dict) else {},
+            metadata=normalized,
+        )
 
         workflow = normalized.get("workflow")
         if isinstance(workflow, str):
@@ -318,3 +322,70 @@ class RegistryLoader:
             normalized["method_spec"] = method_spec
 
         return normalized
+
+    def _normalize_parameter_specs(self, *, schema: dict[str, Any], metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        """
+        Build a canonical parameter spec map from metadata overrides + JSON schema.
+
+        Output format:
+        {
+          "param_name": {
+             "type": "string",
+             "required": true,
+             "description": "...",
+             "examples": ["..."],
+             "default": "...",
+             "enum": [...],
+             "pattern": "...",
+             "format": "..."
+          }
+        }
+        """
+        raw_specs = metadata.get("parameter_specs")
+        specs: dict[str, dict[str, Any]] = {}
+        if isinstance(raw_specs, dict):
+            for name, value in raw_specs.items():
+                param = str(name).strip()
+                if not param or not isinstance(value, dict):
+                    continue
+                specs[param] = dict(value)
+        elif isinstance(raw_specs, list):
+            for item in raw_specs:
+                if not isinstance(item, dict):
+                    continue
+                param = str(item.get("name", "")).strip()
+                if not param:
+                    continue
+                candidate = {k: v for k, v in item.items() if k != "name"}
+                specs[param] = candidate if isinstance(candidate, dict) else {}
+
+        properties = schema.get("properties")
+        raw_required = schema.get("required")
+        required_items = raw_required if isinstance(raw_required, list) else []
+        required_set = {str(item).strip() for item in required_items if str(item).strip()}
+        if isinstance(properties, dict):
+            for param_name, prop in properties.items():
+                if not isinstance(prop, dict):
+                    continue
+                key = str(param_name).strip()
+                if not key:
+                    continue
+                spec = specs.setdefault(key, {})
+                if isinstance(prop.get("type"), str) and "type" not in spec:
+                    spec["type"] = prop["type"]
+                if key in required_set and "required" not in spec:
+                    spec["required"] = True
+                if isinstance(prop.get("description"), str) and prop["description"].strip() and "description" not in spec:
+                    spec["description"] = prop["description"].strip()
+                if isinstance(prop.get("examples"), list) and "examples" not in spec:
+                    spec["examples"] = [item for item in prop["examples"] if isinstance(item, (str, int, float, bool))]
+                if "default" in prop and "default" not in spec:
+                    spec["default"] = prop["default"]
+                if isinstance(prop.get("enum"), list) and "enum" not in spec:
+                    spec["enum"] = prop["enum"]
+                if isinstance(prop.get("pattern"), str) and prop["pattern"].strip() and "pattern" not in spec:
+                    spec["pattern"] = prop["pattern"].strip()
+                if isinstance(prop.get("format"), str) and prop["format"].strip() and "format" not in spec:
+                    spec["format"] = prop["format"].strip()
+
+        return specs

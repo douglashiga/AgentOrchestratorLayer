@@ -1,0 +1,769 @@
+[
+  {
+    "index": 1,
+    "question": "qual o valor da petro",
+    "intent": {
+      "domain": "finance",
+      "capability": "get_stock_price",
+      "confidence": 0.95,
+      "parameters": {
+        "symbol": "PETR4.SA",
+        "exchange": null,
+        "currency": "USD"
+      },
+      "original_query": "qual o valor da petro"
+    },
+    "plan": {
+      "execution_mode": "sequential",
+      "steps": [
+        {
+          "id": 1,
+          "domain": "finance",
+          "capability": "get_stock_price",
+          "params": {
+            "symbol": "PETR4.SA",
+            "exchange": null,
+            "currency": "USD"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "primary",
+          "timeout_seconds": null
+        }
+      ],
+      "combine_mode": "last",
+      "max_concurrency": 4
+    },
+    "route": [
+      {
+        "id": 1,
+        "domain": "finance",
+        "capability": "get_stock_price",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "HttpDomainHandler",
+        "depends_on": [],
+        "required": true
+      }
+    ],
+    "route_ok": true,
+    "execute_ok": null
+  },
+  {
+    "index": 2,
+    "question": "compare fundamentos",
+    "intent": {
+      "domain": "general",
+      "capability": "chat",
+      "confidence": 0.0,
+      "parameters": {
+        "message": "compare fundamentos"
+      },
+      "original_query": "compare fundamentos"
+    },
+    "plan": {
+      "execution_mode": "sequential",
+      "steps": [
+        {
+          "id": 1,
+          "domain": "general",
+          "capability": "chat",
+          "params": {
+            "message": "compare fundamentos"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "primary",
+          "timeout_seconds": null
+        }
+      ],
+      "combine_mode": "last",
+      "max_concurrency": 4
+    },
+    "route": [
+      {
+        "id": 1,
+        "domain": "general",
+        "capability": "chat",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "GeneralDomainHandler",
+        "depends_on": [],
+        "required": true
+      }
+    ],
+    "route_ok": true,
+    "execute_ok": null
+  },
+  {
+    "index": 3,
+    "question": "qual o valor da vale3 e petro4",
+    "intent": {
+      "domain": "finance",
+      "capability": "get_stock_price",
+      "confidence": 0.95,
+      "parameters": {
+        "symbols": [
+          "VALE3.SA",
+          "PETR4.SA"
+        ],
+        "symbol": "VALE3.SA",
+        "exchange": null,
+        "currency": "USD"
+      },
+      "original_query": "qual o valor da vale3 e petro4"
+    },
+    "plan": {
+      "execution_mode": "dag",
+      "steps": [
+        {
+          "id": 1,
+          "domain": "finance",
+          "capability": "get_stock_price",
+          "params": {
+            "exchange": null,
+            "currency": "USD",
+            "symbol": "VALE3.SA"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "price_1",
+          "timeout_seconds": null
+        },
+        {
+          "id": 2,
+          "domain": "finance",
+          "capability": "get_stock_price",
+          "params": {
+            "exchange": null,
+            "currency": "USD",
+            "symbol": "PETR4.SA"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "price_2",
+          "timeout_seconds": null
+        }
+      ],
+      "combine_mode": "report",
+      "max_concurrency": 2
+    },
+    "route": [
+      {
+        "id": 1,
+        "domain": "finance",
+        "capability": "get_stock_price",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "HttpDomainHandler",
+        "depends_on": [],
+        "required": true
+      },
+      {
+        "id": 2,
+        "domain": "finance",
+        "capability": "get_stock_price",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "HttpDomainHandler",
+        "depends_on": [],
+        "required": true
+      }
+    ],
+    "route_ok": true,
+    "execute_ok": null
+  },
+  {
+    "index": 4,
+    "question": "qual o valor da vale3 e abc",
+    "intent": {
+      "domain": "finance",
+      "capability": "get_stock_price",
+      "confidence": 0.95,
+      "parameters": {
+        "symbols": [
+          "VALE3.SA",
+          "ABC"
+        ],
+        "symbol": "VALE3.SA",
+        "exchange": null,
+        "currency": "USD"
+      },
+      "original_query": "qual o valor da vale3 e abc"
+    },
+    "plan": {
+      "execution_mode": "dag",
+      "steps": [
+        {
+          "id": 1,
+          "domain": "finance",
+          "capability": "get_stock_price",
+          "params": {
+            "exchange": null,
+            "currency": "USD",
+            "symbol": "VALE3.SA"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "price_1",
+          "timeout_seconds": null
+        },
+        {
+          "id": 2,
+          "domain": "finance",
+          "capability": "get_stock_price",
+          "params": {
+            "exchange": null,
+            "currency": "USD",
+            "symbol": "ABC"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "price_2",
+          "timeout_seconds": null
+        }
+      ],
+      "combine_mode": "report",
+      "max_concurrency": 2
+    },
+    "route": [
+      {
+        "id": 1,
+        "domain": "finance",
+        "capability": "get_stock_price",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "HttpDomainHandler",
+        "depends_on": [],
+        "required": true
+      },
+      {
+        "id": 2,
+        "domain": "finance",
+        "capability": "get_stock_price",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "HttpDomainHandler",
+        "depends_on": [],
+        "required": true
+      }
+    ],
+    "route_ok": true,
+    "execute_ok": null
+  },
+  {
+    "index": 5,
+    "question": "qual o valor da vale3, petr4 e itub4",
+    "intent": {
+      "domain": "finance",
+      "capability": "get_stock_price",
+      "confidence": 0.95,
+      "parameters": {
+        "symbols": [
+          "VALE3.SA",
+          "PETR4.SA",
+          "ITUB4.SA"
+        ],
+        "symbol": "VALE3.SA",
+        "exchange": null,
+        "currency": "USD"
+      },
+      "original_query": "qual o valor da vale3, petr4 e itub4"
+    },
+    "plan": {
+      "execution_mode": "dag",
+      "steps": [
+        {
+          "id": 1,
+          "domain": "finance",
+          "capability": "get_stock_price",
+          "params": {
+            "exchange": null,
+            "currency": "USD",
+            "symbol": "VALE3.SA"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "price_1",
+          "timeout_seconds": null
+        },
+        {
+          "id": 2,
+          "domain": "finance",
+          "capability": "get_stock_price",
+          "params": {
+            "exchange": null,
+            "currency": "USD",
+            "symbol": "PETR4.SA"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "price_2",
+          "timeout_seconds": null
+        },
+        {
+          "id": 3,
+          "domain": "finance",
+          "capability": "get_stock_price",
+          "params": {
+            "exchange": null,
+            "currency": "USD",
+            "symbol": "ITUB4.SA"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "price_3",
+          "timeout_seconds": null
+        }
+      ],
+      "combine_mode": "report",
+      "max_concurrency": 3
+    },
+    "route": [
+      {
+        "id": 1,
+        "domain": "finance",
+        "capability": "get_stock_price",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "HttpDomainHandler",
+        "depends_on": [],
+        "required": true
+      },
+      {
+        "id": 2,
+        "domain": "finance",
+        "capability": "get_stock_price",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "HttpDomainHandler",
+        "depends_on": [],
+        "required": true
+      },
+      {
+        "id": 3,
+        "domain": "finance",
+        "capability": "get_stock_price",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "HttpDomainHandler",
+        "depends_on": [],
+        "required": true
+      }
+    ],
+    "route_ok": true,
+    "execute_ok": null
+  },
+  {
+    "index": 6,
+    "question": "qual o valor da vale3, petr4, bbas3 e itub4",
+    "intent": {
+      "domain": "finance",
+      "capability": "get_stock_price",
+      "confidence": 0.95,
+      "parameters": {
+        "symbols": [
+          "VALE3.SA",
+          "PETR4.SA",
+          "BBAS3.SA",
+          "ITUB4.SA"
+        ],
+        "symbol": "VALE3.SA",
+        "exchange": null,
+        "currency": "USD"
+      },
+      "original_query": "qual o valor da vale3, petr4, bbas3 e itub4"
+    },
+    "plan": {
+      "execution_mode": "dag",
+      "steps": [
+        {
+          "id": 1,
+          "domain": "finance",
+          "capability": "get_stock_price",
+          "params": {
+            "exchange": null,
+            "currency": "USD",
+            "symbol": "VALE3.SA"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "price_1",
+          "timeout_seconds": null
+        },
+        {
+          "id": 2,
+          "domain": "finance",
+          "capability": "get_stock_price",
+          "params": {
+            "exchange": null,
+            "currency": "USD",
+            "symbol": "PETR4.SA"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "price_2",
+          "timeout_seconds": null
+        },
+        {
+          "id": 3,
+          "domain": "finance",
+          "capability": "get_stock_price",
+          "params": {
+            "exchange": null,
+            "currency": "USD",
+            "symbol": "BBAS3.SA"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "price_3",
+          "timeout_seconds": null
+        },
+        {
+          "id": 4,
+          "domain": "finance",
+          "capability": "get_stock_price",
+          "params": {
+            "exchange": null,
+            "currency": "USD",
+            "symbol": "ITUB4.SA"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "price_4",
+          "timeout_seconds": null
+        }
+      ],
+      "combine_mode": "report",
+      "max_concurrency": 4
+    },
+    "route": [
+      {
+        "id": 1,
+        "domain": "finance",
+        "capability": "get_stock_price",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "HttpDomainHandler",
+        "depends_on": [],
+        "required": true
+      },
+      {
+        "id": 2,
+        "domain": "finance",
+        "capability": "get_stock_price",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "HttpDomainHandler",
+        "depends_on": [],
+        "required": true
+      },
+      {
+        "id": 3,
+        "domain": "finance",
+        "capability": "get_stock_price",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "HttpDomainHandler",
+        "depends_on": [],
+        "required": true
+      },
+      {
+        "id": 4,
+        "domain": "finance",
+        "capability": "get_stock_price",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "HttpDomainHandler",
+        "depends_on": [],
+        "required": true
+      }
+    ],
+    "route_ok": true,
+    "execute_ok": null
+  },
+  {
+    "index": 7,
+    "question": "qual o valor da acao da nordea na bolsa da suecia",
+    "intent": {
+      "domain": "finance",
+      "capability": "get_stock_price",
+      "confidence": 0.95,
+      "parameters": {
+        "symbol": "NDA-SE.ST",
+        "exchange": null,
+        "currency": "USD"
+      },
+      "original_query": "qual o valor da acao da nordea na bolsa da suecia"
+    },
+    "plan": {
+      "execution_mode": "sequential",
+      "steps": [
+        {
+          "id": 1,
+          "domain": "finance",
+          "capability": "get_stock_price",
+          "params": {
+            "symbol": "NDA-SE.ST",
+            "exchange": null,
+            "currency": "USD"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "primary",
+          "timeout_seconds": null
+        }
+      ],
+      "combine_mode": "last",
+      "max_concurrency": 4
+    },
+    "route": [
+      {
+        "id": 1,
+        "domain": "finance",
+        "capability": "get_stock_price",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "HttpDomainHandler",
+        "depends_on": [],
+        "required": true
+      }
+    ],
+    "route_ok": true,
+    "execute_ok": null
+  },
+  {
+    "index": 8,
+    "question": "qual o valor da petro e manda no telegram",
+    "intent": {
+      "domain": "finance",
+      "capability": "get_stock_price",
+      "confidence": 0.95,
+      "parameters": {
+        "symbols": [
+          "PETR4.SA",
+          "MANDA"
+        ],
+        "symbol": "PETR4.SA",
+        "exchange": null,
+        "currency": "USD",
+        "notify": true
+      },
+      "original_query": "qual o valor da petro e manda no telegram"
+    },
+    "plan": {
+      "execution_mode": "dag",
+      "steps": [
+        {
+          "id": 1,
+          "domain": "finance",
+          "capability": "get_stock_price",
+          "params": {
+            "exchange": null,
+            "currency": "USD",
+            "notify": true,
+            "symbol": "PETR4.SA"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "price_1",
+          "timeout_seconds": null
+        },
+        {
+          "id": 2,
+          "domain": "finance",
+          "capability": "get_stock_price",
+          "params": {
+            "exchange": null,
+            "currency": "USD",
+            "notify": true,
+            "symbol": "MANDA"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "price_2",
+          "timeout_seconds": null
+        }
+      ],
+      "combine_mode": "report",
+      "max_concurrency": 2
+    },
+    "route": [
+      {
+        "id": 1,
+        "domain": "finance",
+        "capability": "get_stock_price",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "HttpDomainHandler",
+        "depends_on": [],
+        "required": true
+      },
+      {
+        "id": 2,
+        "domain": "finance",
+        "capability": "get_stock_price",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "HttpDomainHandler",
+        "depends_on": [],
+        "required": true
+      }
+    ],
+    "route_ok": true,
+    "execute_ok": null
+  },
+  {
+    "index": 9,
+    "question": "qual o valor da vale3 e petro4 e manda no telegram",
+    "intent": {
+      "domain": "finance",
+      "capability": "get_stock_price",
+      "confidence": 0.95,
+      "parameters": {
+        "symbols": [
+          "VALE3.SA",
+          "PETR4.SA",
+          "MANDA"
+        ],
+        "symbol": "VALE3.SA",
+        "exchange": null,
+        "currency": "USD",
+        "notify": true
+      },
+      "original_query": "qual o valor da vale3 e petro4 e manda no telegram"
+    },
+    "plan": {
+      "execution_mode": "dag",
+      "steps": [
+        {
+          "id": 1,
+          "domain": "finance",
+          "capability": "get_stock_price",
+          "params": {
+            "exchange": null,
+            "currency": "USD",
+            "notify": true,
+            "symbol": "VALE3.SA"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "price_1",
+          "timeout_seconds": null
+        },
+        {
+          "id": 2,
+          "domain": "finance",
+          "capability": "get_stock_price",
+          "params": {
+            "exchange": null,
+            "currency": "USD",
+            "notify": true,
+            "symbol": "PETR4.SA"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "price_2",
+          "timeout_seconds": null
+        },
+        {
+          "id": 3,
+          "domain": "finance",
+          "capability": "get_stock_price",
+          "params": {
+            "exchange": null,
+            "currency": "USD",
+            "notify": true,
+            "symbol": "MANDA"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "price_3",
+          "timeout_seconds": null
+        }
+      ],
+      "combine_mode": "report",
+      "max_concurrency": 3
+    },
+    "route": [
+      {
+        "id": 1,
+        "domain": "finance",
+        "capability": "get_stock_price",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "HttpDomainHandler",
+        "depends_on": [],
+        "required": true
+      },
+      {
+        "id": 2,
+        "domain": "finance",
+        "capability": "get_stock_price",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "HttpDomainHandler",
+        "depends_on": [],
+        "required": true
+      },
+      {
+        "id": 3,
+        "domain": "finance",
+        "capability": "get_stock_price",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "HttpDomainHandler",
+        "depends_on": [],
+        "required": true
+      }
+    ],
+    "route_ok": true,
+    "execute_ok": null
+  },
+  {
+    "index": 10,
+    "question": "faz deploy do meu kubernetes em producao",
+    "intent": {
+      "domain": "general",
+      "capability": "chat",
+      "confidence": 0.0,
+      "parameters": {
+        "message": "faz deploy do meu kubernetes em producao"
+      },
+      "original_query": "faz deploy do meu kubernetes em producao"
+    },
+    "plan": {
+      "execution_mode": "sequential",
+      "steps": [
+        {
+          "id": 1,
+          "domain": "general",
+          "capability": "chat",
+          "params": {
+            "message": "faz deploy do meu kubernetes em producao"
+          },
+          "depends_on": [],
+          "required": true,
+          "output_key": "primary",
+          "timeout_seconds": null
+        }
+      ],
+      "combine_mode": "last",
+      "max_concurrency": 4
+    },
+    "route": [
+      {
+        "id": 1,
+        "domain": "general",
+        "capability": "chat",
+        "reachable": true,
+        "resolution": "capability",
+        "handler_class": "GeneralDomainHandler",
+        "depends_on": [],
+        "required": true
+      }
+    ],
+    "route_ok": true,
+    "execute_ok": null
+  }
+]

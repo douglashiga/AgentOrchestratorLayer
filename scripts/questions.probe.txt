@@ -1,0 +1,33 @@
+# =============================
+# PROBE SCENARIOS (by category)
+# =============================
+
+# 1) Single task (sem multi-task)
+qual o valor da petro
+
+# 2) Single task faltando parametro
+# (ex.: capability tende a exigir simbolos e a pergunta nao informou)
+compare fundamentos
+
+# 3) Multi-task com 2 tasks
+qual o valor da vale3 e petro4
+
+# 4) Multi-task com 2 tasks com 1 entrada incompleta/ruim
+# (uma task tende a ser valida e outra pode falhar em validacao/resolucao)
+qual o valor da vale3 e abc
+
+# 5) Multi-task com 3 tasks
+qual o valor da vale3, petr4 e itub4
+
+# 6) Multi-task com 4 tasks
+qual o valor da vale3, petr4, bbas3 e itub4
+
+# 7) Finance internacional (single task)
+qual o valor da acao da nordea na bolsa da suecia
+
+# 8) Finance + communication (follow-up/notificacao)
+qual o valor da petro e manda no telegram
+qual o valor da vale3 e petro4 e manda no telegram
+
+# 9) Unknown / unsupported
+faz deploy do meu kubernetes em producao

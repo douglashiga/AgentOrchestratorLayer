@@ -80,6 +80,32 @@ def health_check():
 METADATA_OVERRIDES = {
     "get_stock_price": {
         "explanation_template": "{symbol} is trading at {result[price]} {currency}.",
+        "parameter_specs": {
+            "currency": {
+                "infer_from_symbol_suffix": {
+                    ".SA": "BRL",
+                    ".ST": "SEK",
+                },
+                "default": "USD",
+                "value_labels": {
+                    "USD": "dólar",
+                    "BRL": "real",
+                    "SEK": "coroa sueca",
+                },
+            },
+            "exchange": {
+                "infer_from_symbol_suffix": {
+                    ".SA": "BOVESPA",
+                    ".ST": "SFB",
+                },
+                "default": "SMART",
+                "value_labels": {
+                    "SMART": "mercado dos EUA",
+                    "BOVESPA": "Bovespa",
+                    "SFB": "bolsa da Suécia",
+                },
+            },
+        },
         "flow": {
             "pre": [
                 {

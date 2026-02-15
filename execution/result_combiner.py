@@ -35,6 +35,7 @@ class ResultCombiner:
         required_failures: list[str] = []
         optional_failures: list[str] = []
         clarifications: list[str] = []
+        all_test_mode = True
 
         for step_id in ordered_ids:
             step = steps_by_id[step_id]
@@ -51,6 +52,8 @@ class ResultCombiner:
                 "result": out.result,
                 "metadata": out.metadata,
             }
+            if not (isinstance(out.metadata, dict) and out.metadata.get("test_mode") is True):
+                all_test_mode = False
 
             if out.status == "clarification":
                 clarifications.append(out.explanation)
@@ -72,6 +75,10 @@ class ResultCombiner:
                 else f"Execution failed in required task(s): {', '.join(required_failures)}."
             )
             confidence = 0.0 if status == "failure" else 0.8
+        elif all_test_mode:
+            status = "success"
+            confidence = 1.0
+            explanation = f"Test mode: rota validada para {len(outputs)} step(s)."
         else:
             status = "success"
             confidence = 1.0
@@ -91,6 +98,8 @@ class ResultCombiner:
             "combine_mode": plan.combine_mode,
             "steps_executed": len(outputs),
         }
+        if all_test_mode:
+            metadata["test_mode"] = True
 
         return DomainOutput(
             status=status,

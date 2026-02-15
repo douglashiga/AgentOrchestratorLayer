@@ -17,7 +17,7 @@ import logging
 import inspect
 import os
 
-from shared.models import DomainOutput, IntentOutput, ModelPolicy
+from shared.models import DomainOutput, IntentOutput
 from registry.domain_registry import HandlerRegistry
 from models.selector import ModelSelector
 
@@ -36,18 +36,11 @@ class Orchestrator:
                 os.getenv("SOFT_CONFIRM_THRESHOLD", "0.94"),
             )
         )
-        clarification_timeout_seconds = float(os.getenv("ORCHESTRATOR_CLARIFICATION_TIMEOUT_SECONDS", "12"))
-        clarification_max_retries = int(os.getenv("ORCHESTRATOR_CLARIFICATION_MAX_RETRIES", "1"))
-        clarification_model_name = os.getenv(
-            "ORCHESTRATOR_CLARIFICATION_MODEL",
-            os.getenv("INTENT_MODEL_NAME", os.getenv("OLLAMA_INTENT_MODEL", "llama3.1:8b")),
-        ).strip() or "llama3.1:8b"
-        self.clarification_policy = ModelPolicy(
-            model_name=clarification_model_name,
-            temperature=0.7,
-            timeout_seconds=max(1.0, clarification_timeout_seconds),
-            max_retries=max(1, clarification_max_retries),
-            json_mode=False
+        self.test_mode_enabled = os.getenv("ORCHESTRATOR_TEST_MODE", "false").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
         )
 
     async def process(self, intent: IntentOutput) -> DomainOutput:
@@ -57,32 +50,36 @@ class Orchestrator:
         """
         logger.info("Orchestrator processing: domain=%s capability=%s (conf=%.2f)", 
                     intent.domain, intent.capability, intent.confidence)
+        test_mode = self._is_test_mode(intent)
 
         # 1. Confidence Gating
         # Keep general-domain responses responsive even when fallback confidence is low.
         is_general_domain = intent.domain == "general"
-        if intent.confidence < self.confidence_threshold and not is_general_domain:
+        if intent.confidence < self.confidence_threshold and not is_general_domain and not test_mode:
             logger.warning(
                 "Intent confidence too low: %.2f < %.2f",
                 intent.confidence,
                 self.confidence_threshold,
             )
-            
-            question = self._generate_clarification_question(intent)
-            
+
             return DomainOutput(
                 status="clarification",
                 result={},
-                explanation=question,
+                explanation=(
+                    f"Não tenho confiança suficiente para executar '{intent.capability}'. "
+                    "Pode confirmar os parâmetros principais?"
+                ),
                 confidence=intent.confidence
             )
 
         # 2. Try to resolve by specific Capability
         handler = self.domain_registry.resolve_capability(intent.capability)
+        resolution_path = "capability"
         
         # 3. Fallback: Resolve by Domain (legacy/broad)
         if handler is None:
             handler = self.domain_registry.resolve_domain(intent.domain)
+            resolution_path = "domain"
 
         if handler is None:
             return DomainOutput(
@@ -91,6 +88,32 @@ class Orchestrator:
                 explanation=f"No handler registered for capability '{intent.capability}' or domain '{intent.domain}'.",
                 confidence=1.0,
                 metadata={"error": f"Unknown capability/domain: {intent.capability}/{intent.domain}"}
+            )
+
+        if test_mode:
+            handler_name = handler.__class__.__name__
+            return DomainOutput(
+                status="success",
+                result={
+                    "test_mode": True,
+                    "route": {
+                        "resolution_path": resolution_path,
+                        "domain": intent.domain,
+                        "capability": intent.capability,
+                        "handler_class": handler_name,
+                    },
+                    "intent": intent.model_dump(mode="json"),
+                },
+                explanation=(
+                    f"Test mode: roteamento válido até domain handler '{handler_name}' "
+                    f"via {resolution_path}. Execução de domínio foi pulada."
+                ),
+                confidence=1.0,
+                metadata={
+                    "test_mode": True,
+                    "test_mode_stage": "domain_routed",
+                    "resolution_path": resolution_path,
+                },
             )
 
         # Delegate to domain handler
@@ -112,40 +135,8 @@ class Orchestrator:
                 metadata={"error": str(e)}
             )
 
-    def _generate_clarification_question(self, intent: IntentOutput) -> str:
-        """Generate a natural language clarification question."""
-        try:
-            # Fetch capability metadata/schema for context
-            metadata = self.domain_registry.get_metadata(intent.capability)
-            schema = metadata.get("schema", {})
-            description = metadata.get("description", "")
-            valid_values = metadata.get("valid_values", {})
-
-            prompt = (
-                f"You are a helpful financial assistant. The user wants to perform '{intent.capability}'.\n"
-                f"Context:\n"
-                f"- User's Original Input: '{intent.original_query}'\n"
-                f"- Extracted Params: {intent.parameters}\n"
-                f"- Schema: {schema}\n"
-                f"- Valid Choices: {valid_values}\n"
-                f"- Current Confidence: {intent.confidence:.0%} (Target: >98%)\n\n"
-                "OBJECTIVE: Ask a SHORT clarification question to get the missing information.\n\n"
-                "CRITICAL INSTRUCTIONS:\n"
-                "1. **LANGUAGE**: Output the question IN THE SAME LANGUAGE as the 'User's Original Input'.\n"
-                "   - If input is Portuguese -> Question MUST be Portuguese.\n"
-                "   - If input is English -> Question MUST be English.\n"
-                "2. **NO PREAMBLE**: Output ONLY the question text. Do not say 'Here is the question'.\n"
-                "3. **BE SPECIFIC**: Ask for the missing parameter explicitly using the Valid Choices.\n"
-                "4. Example (if input is PT): 'Para listar as maiores altas, qual mercado você prefere? (US, BR, SE)'\n"
-                "Question:"
-            )
-            
-            messages = [{"role": "user", "content": prompt}]
-            response = self.model_selector.generate(messages, self.clarification_policy)
-            return str(response).strip()
-        except Exception as e:
-            logger.warning("Failed to generate clarification: %s", e)
-            return (
-                f"I'm not quite sure I understood (Confidence: {intent.confidence:.1%}). "
-                "Could you please be more specific?"
-            )
+    def _is_test_mode(self, intent: IntentOutput) -> bool:
+        if self.test_mode_enabled:
+            return True
+        params = intent.parameters or {}
+        return bool(params.get("_test_mode") is True)

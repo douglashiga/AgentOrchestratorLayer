@@ -142,7 +142,7 @@ class IntentAdapter:
         if intent.domain == "general" and intent.capability == "chat":
             deterministic = self._deterministic_fallback(input_text)
             if deterministic:
-                return deterministic
+                return self._enrich_intent_from_query(deterministic, input_text)
         return self._enrich_intent_from_query(intent, input_text)
 
     def _enrich_intent_from_query(self, intent: IntentOutput, input_text: str) -> IntentOutput:
@@ -152,19 +152,44 @@ class IntentAdapter:
         """
         params = dict(intent.parameters or {})
         confidence = float(intent.confidence)
-        if (
-            intent.domain == "finance"
-            and intent.capability == "get_stock_price"
-            and not params.get("symbol")
-            and not (isinstance(params.get("symbols"), list) and params.get("symbols"))
-        ):
+        if intent.domain == "finance" and intent.capability == "get_stock_price":
             inferred_symbols = self._extract_symbols_from_text(input_text)
-            if inferred_symbols:
-                if len(inferred_symbols) == 1:
-                    params["symbol"] = inferred_symbols[0]
+            existing_symbols: list[str] = []
+
+            existing_single = params.get("symbol")
+            if isinstance(existing_single, str) and existing_single.strip():
+                existing_symbols.append(existing_single.strip().upper())
+
+            existing_list = params.get("symbols")
+            if isinstance(existing_list, list):
+                for item in existing_list:
+                    if isinstance(item, str) and item.strip():
+                        existing_symbols.append(item.strip().upper())
+
+            merged: list[str] = []
+            seen: set[str] = set()
+            for item in inferred_symbols + existing_symbols:
+                key = item.strip().upper()
+                if not key or key in seen:
+                    continue
+                if not self._is_likely_symbol(key):
+                    continue
+                seen.add(key)
+                merged.append(key)
+
+            if merged:
+                params["symbol"] = merged[0]
+                if len(merged) > 1:
+                    params["symbols"] = merged
                 else:
-                    params["symbols"] = inferred_symbols
+                    params.pop("symbols", None)
                 confidence = max(confidence, 0.95)
+
+        params = self._apply_parameter_contracts(
+            domain=intent.domain,
+            capability=intent.capability,
+            params=params,
+        )
 
         notify_detected = self._infer_notify_from_text(input_text)
         if notify_detected:
@@ -202,9 +227,246 @@ class IntentAdapter:
             )
         return capability in self.capabilities
 
+    def _parse_json_object(self, raw: Any) -> dict[str, Any]:
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                return {}
+        return {}
+
+    def _capability_catalog_entry(self, domain: str, capability: str) -> dict[str, Any] | None:
+        for item in self.capability_catalog:
+            cap = str(item.get("capability") or item.get("name") or "").strip()
+            dom = str(item.get("domain") or "").strip()
+            if dom == domain and cap == capability:
+                return item
+        return None
+
+    def _schema_parameter_specs(self, schema: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        if not isinstance(schema, dict):
+            return {}
+
+        out: dict[str, dict[str, Any]] = {}
+        properties = schema.get("properties")
+        raw_required = schema.get("required")
+        required_items = raw_required if isinstance(raw_required, list) else []
+        required_set = {str(item).strip() for item in required_items if str(item).strip()}
+        if not isinstance(properties, dict):
+            return out
+
+        for param_name, prop in properties.items():
+            if not isinstance(prop, dict):
+                continue
+            name = str(param_name).strip()
+            if not name:
+                continue
+            spec: dict[str, Any] = {}
+            if isinstance(prop.get("type"), str):
+                spec["type"] = prop["type"]
+            if name in required_set:
+                spec["required"] = True
+            if isinstance(prop.get("description"), str) and prop["description"].strip():
+                spec["description"] = prop["description"].strip()
+            if isinstance(prop.get("examples"), list):
+                spec["examples"] = [v for v in prop["examples"] if isinstance(v, (str, int, float, bool))]
+            if "default" in prop:
+                spec["default"] = prop["default"]
+            if isinstance(prop.get("enum"), list):
+                spec["enum"] = prop["enum"]
+            if isinstance(prop.get("pattern"), str) and prop["pattern"].strip():
+                spec["pattern"] = prop["pattern"].strip()
+            if isinstance(prop.get("format"), str) and prop["format"].strip():
+                spec["format"] = prop["format"].strip()
+            out[name] = spec
+        return out
+
+    def _parameter_specs_for_capability(self, domain: str, capability: str) -> dict[str, dict[str, Any]]:
+        entry = self._capability_catalog_entry(domain=domain, capability=capability)
+        if not entry:
+            return {}
+
+        metadata = self._parse_json_object(entry.get("metadata"))
+        raw_specs = metadata.get("parameter_specs")
+        specs: dict[str, dict[str, Any]] = {}
+        if isinstance(raw_specs, dict):
+            for param_name, value in raw_specs.items():
+                key = str(param_name).strip()
+                if key and isinstance(value, dict):
+                    specs[key] = dict(value)
+        elif isinstance(raw_specs, list):
+            for item in raw_specs:
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("name", "")).strip()
+                if not key:
+                    continue
+                specs[key] = {k: v for k, v in item.items() if k != "name"}
+
+        schema = self._parse_json_object(entry.get("schema"))
+        if not schema:
+            schema = self._parse_json_object(entry.get("input_schema"))
+        for key, schema_spec in self._schema_parameter_specs(schema).items():
+            current = specs.setdefault(key, {})
+            for prop_name, prop_value in schema_spec.items():
+                current.setdefault(prop_name, prop_value)
+
+        return specs
+
+    def _normalize_parameter_value(self, value: Any, spec: dict[str, Any]) -> Any:
+        if isinstance(value, list):
+            item_spec = spec.get("items") if isinstance(spec.get("items"), dict) else spec
+            return [self._normalize_parameter_value(item, item_spec) for item in value]
+
+        if not isinstance(value, str):
+            return value
+
+        text = value.strip()
+        if not text:
+            return text
+
+        aliases = spec.get("aliases")
+        if isinstance(aliases, dict):
+            direct = aliases.get(text)
+            if direct is None:
+                direct = aliases.get(text.upper())
+            if direct is None:
+                direct = aliases.get(text.lower())
+            if isinstance(direct, str) and direct.strip():
+                text = direct.strip()
+
+        normalization = spec.get("normalization")
+        if isinstance(normalization, dict):
+            case_mode = str(normalization.get("case", "")).strip().lower()
+            if case_mode == "upper":
+                text = text.upper()
+            elif case_mode == "lower":
+                text = text.lower()
+            suffix = normalization.get("suffix")
+            if isinstance(suffix, str) and suffix.strip():
+                suffix_value = suffix.strip()
+                if not text.upper().endswith(suffix_value.upper()):
+                    text = f"{text}{suffix_value}"
+
+        enum = spec.get("enum")
+        if isinstance(enum, list):
+            for item in enum:
+                if str(item).strip().lower() == text.lower():
+                    text = str(item).strip()
+                    break
+
+        return text
+
+    def _infer_value_from_symbol_suffix(self, params: dict[str, Any], spec: dict[str, Any]) -> Any:
+        infer_map = spec.get("infer_from_symbol_suffix")
+        if not isinstance(infer_map, dict):
+            return None
+
+        symbol_value: str | None = None
+        raw_symbol = params.get("symbol")
+        if isinstance(raw_symbol, str) and raw_symbol.strip():
+            symbol_value = raw_symbol.strip().upper()
+        else:
+            raw_symbols = params.get("symbols")
+            if isinstance(raw_symbols, list):
+                for item in raw_symbols:
+                    if isinstance(item, str) and item.strip():
+                        symbol_value = item.strip().upper()
+                        break
+
+        if not symbol_value:
+            return None
+
+        for suffix_raw, inferred in infer_map.items():
+            suffix = str(suffix_raw).strip().upper()
+            if not suffix:
+                continue
+            if symbol_value.endswith(suffix):
+                return inferred
+        return None
+
+    def _apply_parameter_contracts(
+        self,
+        *,
+        domain: str,
+        capability: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        specs = self._parameter_specs_for_capability(domain=domain, capability=capability)
+        if not specs:
+            return params
+
+        normalized = dict(params)
+        for param_name, spec in specs.items():
+            if not isinstance(spec, dict):
+                continue
+            value = normalized.get(param_name)
+            if value in (None, ""):
+                inferred = self._infer_value_from_symbol_suffix(normalized, spec)
+                if inferred not in (None, ""):
+                    normalized[param_name] = inferred
+                    value = inferred
+                elif "default" in spec:
+                    normalized[param_name] = spec.get("default")
+                    value = normalized.get(param_name)
+            if value is None:
+                continue
+            normalized[param_name] = self._normalize_parameter_value(value, spec)
+        return normalized
+
     def _extract_symbol_from_text(self, text: str) -> str | None:
         symbols = self._extract_symbols_from_text(text)
         return symbols[0] if symbols else None
+
+    def _is_likely_symbol(self, value: str) -> bool:
+        token = (value or "").strip().upper()
+        if not token:
+            return False
+
+        if re.fullmatch(r"[A-Z0-9-]{1,12}\.[A-Z]{1,4}", token):
+            return True
+        if re.fullmatch(r"[A-Z]{4}(?:3|4|5|6|11)(?:F)?(?:\.SA)?", token):
+            return True
+
+        blocked = {
+            "QUAL",
+            "VALOR",
+            "PRECO",
+            "PRICE",
+            "ACAO",
+            "AÇÃO",
+            "BOLSA",
+            "SUECIA",
+            "SUÉCIA",
+            "DA",
+            "DE",
+            "DO",
+            "E",
+            "NA",
+            "NO",
+            "EM",
+            "PARA",
+            "ME",
+            "MANDA",
+            "MANDAR",
+            "ENVIA",
+            "ENVIAR",
+            "ENVIE",
+            "NOTIFIQUE",
+            "NOTIFICAR",
+            "TELEGRAM",
+            "COMPARTILHE",
+            "COMPARTILHAR",
+            "AVISE",
+        }
+        if token in blocked:
+            return False
+
+        return bool(re.fullmatch(r"[A-Z]{1,5}", token))
 
     def _extract_symbols_from_text(self, text: str) -> list[str]:
         upper = (text or "").upper()
@@ -223,6 +485,8 @@ class IntentAdapter:
             symbol = value.strip().upper()
             if not symbol:
                 return
+            if not self._is_likely_symbol(symbol):
+                return
             if symbol not in collected:
                 collected.append(symbol)
 
@@ -236,6 +500,9 @@ class IntentAdapter:
 
         quasi_ticker = re.findall(r"\b([A-Z]{3,8}\d{1,2}[A-Z]?)\b", upper)
         for token in quasi_ticker:
+            if re.fullmatch(r"[A-Z]{4}(?:3|4|5|6|11)(?:F)?", token):
+                add_symbol(f"{token}.SA")
+                continue
             m = re.fullmatch(r"([A-Z]{5,8})(\d{1,2}[A-Z]?)", token)
             if m:
                 letters, suffix = m.groups()
@@ -270,6 +537,17 @@ class IntentAdapter:
             "EM",
             "PARA",
             "ME",
+            "MANDA",
+            "MANDAR",
+            "ENVIA",
+            "ENVIAR",
+            "ENVIE",
+            "NOTIFIQUE",
+            "NOTIFICAR",
+            "TELEGRAM",
+            "COMPARTILHE",
+            "COMPARTILHAR",
+            "AVISE",
         }
         for token in us:
             if token in stopwords:
@@ -301,6 +579,27 @@ class IntentAdapter:
                 cap_name = str(cap.get("capability", "")).strip()
                 cap_desc = str(cap.get("description", "")).strip() or "No description provided."
                 lines.append(f"  - action '{cap_name}': {cap_desc}")
+                param_specs = self._parameter_specs_for_capability(domain=domain, capability=cap_name)
+                for idx, (param_name, spec) in enumerate(sorted(param_specs.items()), start=1):
+                    if idx > 6:
+                        lines.append("    - ...")
+                        break
+                    if not isinstance(spec, dict):
+                        continue
+                    type_name = str(spec.get("type", "any")).strip() or "any"
+                    required = bool(spec.get("required"))
+                    default_value = spec.get("default")
+                    examples = spec.get("examples") if isinstance(spec.get("examples"), list) else []
+                    example_text = ""
+                    if examples:
+                        example_text = f" ex: {examples[0]}"
+                    default_text = ""
+                    if default_value not in (None, ""):
+                        default_text = f" default: {default_value}"
+                    req_text = "required" if required else "optional"
+                    lines.append(
+                        f"    - param '{param_name}' ({type_name}, {req_text}){default_text}{example_text}"
+                    )
         return "\n".join(lines)
 
     def _build_system_prompt(self) -> str:
