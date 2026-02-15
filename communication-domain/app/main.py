@@ -137,6 +137,14 @@ def manifest() -> dict[str, Any]:
                             "enum": ["Markdown", "HTML"],
                         },
                     },
+                    "parameter_sources": {
+                        "chat_id": {
+                            "aliases": ["group_id"],
+                            "from_entry": "chat_id",
+                            "from_env": "TELEGRAM_DEFAULT_CHAT_ID",
+                            "validation": "numeric_id",
+                        },
+                    },
                     "composition": {
                         "role": "notifier",
                         "priority": 100,
@@ -196,6 +204,14 @@ def manifest() -> dict[str, Any]:
                             "type": "string",
                             "required": False,
                             "enum": ["Markdown", "HTML"],
+                        },
+                    },
+                    "parameter_sources": {
+                        "group_id": {
+                            "aliases": ["chat_id"],
+                            "from_entry": "chat_id",
+                            "from_env": "TELEGRAM_DEFAULT_CHAT_ID",
+                            "validation": "numeric_id",
                         },
                     },
                     "composition": {

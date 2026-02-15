@@ -34,7 +34,7 @@ class TaskDecomposer:
         source_meta = self._metadata_of(source_entry)
 
         base_step = self._build_primary_step(intent)
-        multi_symbol_plan = self._build_multi_symbol_price_plan(intent)
+        multi_symbol_plan = self._build_multi_instance_plan(intent)
         if multi_symbol_plan is not None:
             return self._append_followup_if_configured(
                 base_plan=multi_symbol_plan,
@@ -123,12 +123,20 @@ class TaskDecomposer:
 
     def _build_primary_step(self, intent: IntentOutput) -> ExecutionStep:
         params = self._runtime_parameters(intent.parameters)
-        if not params.get("symbol"):
-            symbols = params.get("symbols")
-            if isinstance(symbols, list) and symbols:
-                first = symbols[0]
-                if isinstance(first, str) and first.strip():
-                    params["symbol"] = first.strip()
+
+        # Apply list-to-single fallback from metadata (e.g. symbols→symbol).
+        source_entry = self._find_capability_entry(intent.domain, intent.capability)
+        source_meta = self._metadata_of(source_entry)
+        multi_cfg = self._multi_instance_config(source_meta)
+        if multi_cfg:
+            single_param = multi_cfg["single_param"]
+            list_param = multi_cfg["list_param"]
+            if not params.get(single_param):
+                items = params.get(list_param)
+                if isinstance(items, list) and items:
+                    first = items[0]
+                    if isinstance(first, str) and first.strip():
+                        params[single_param] = first.strip()
 
         return ExecutionStep(
             id=1,
@@ -293,31 +301,62 @@ class TaskDecomposer:
                 workflow = None
         return isinstance(workflow, dict)
 
-    def _build_multi_symbol_price_plan(self, intent: IntentOutput) -> ExecutionPlan | None:
-        if intent.capability != "get_stock_price":
+    def _multi_instance_config(self, metadata: dict[str, Any]) -> dict[str, str] | None:
+        """Extract multi-instance expansion config from capability metadata.
+
+        Expected metadata format:
+            "composition": {
+                "multi_instance": {
+                    "list_param": "symbols",
+                    "single_param": "symbol"
+                }
+            }
+        """
+        composition = metadata.get("composition")
+        if not isinstance(composition, dict):
             return None
-        symbols = self._symbols_from_params(intent.parameters)
-        if len(symbols) <= 1:
+        multi = composition.get("multi_instance")
+        if not isinstance(multi, dict):
             return None
+        list_param = str(multi.get("list_param", "")).strip()
+        single_param = str(multi.get("single_param", "")).strip()
+        if not list_param or not single_param:
+            return None
+        return {"list_param": list_param, "single_param": single_param}
+
+    def _build_multi_instance_plan(self, intent: IntentOutput) -> ExecutionPlan | None:
+        """Build parallel expansion plan driven entirely by metadata."""
+        source_entry = self._find_capability_entry(intent.domain, intent.capability)
+        source_meta = self._metadata_of(source_entry)
+        multi_cfg = self._multi_instance_config(source_meta)
+        if not multi_cfg:
+            return None
+
+        items = self._collect_list_items(intent.parameters, multi_cfg)
+        if len(items) <= 1:
+            return None
+
+        single_param = multi_cfg["single_param"]
+        list_param = multi_cfg["list_param"]
 
         shared_params = {
             key: value
             for key, value in self._runtime_parameters(intent.parameters).items()
-            if key not in {"symbol", "symbols"}
+            if key not in {single_param, list_param}
         }
         steps: list[ExecutionStep] = []
-        for idx, symbol in enumerate(symbols, start=1):
+        for idx, item_value in enumerate(items, start=1):
             params = dict(shared_params)
-            params["symbol"] = symbol
+            params[single_param] = item_value
             steps.append(
                 ExecutionStep(
                     id=idx,
                     domain=intent.domain,
-                    capability="get_stock_price",
+                    capability=intent.capability,
                     params=params,
                     depends_on=[],
                     required=True,
-                    output_key=f"price_{idx}",
+                    output_key=f"{single_param}_{idx}",
                 )
             )
 
@@ -328,33 +367,32 @@ class TaskDecomposer:
             steps=steps,
         )
 
-    def _symbols_from_params(self, params: dict[str, Any]) -> list[str]:
+    def _collect_list_items(self, params: dict[str, Any], multi_cfg: dict[str, str]) -> list[str]:
+        """Collect unique items from single + list parameters."""
         if not isinstance(params, dict):
             return []
 
-        symbols: list[str] = []
-        symbol_single = params.get("symbol")
-        if isinstance(symbol_single, str) and symbol_single.strip():
-            symbols.append(symbol_single.strip())
+        single_param = multi_cfg["single_param"]
+        list_param = multi_cfg["list_param"]
 
-        symbol_list = params.get("symbols")
-        if isinstance(symbol_list, list):
-            for item in symbol_list:
-                if not isinstance(item, str):
-                    continue
-                text = item.strip()
-                if not text:
-                    continue
-                symbols.append(text)
+        items: list[str] = []
+        single_value = params.get(single_param)
+        if isinstance(single_value, str) and single_value.strip():
+            items.append(single_value.strip())
+
+        list_value = params.get(list_param)
+        if isinstance(list_value, list):
+            for entry in list_value:
+                if isinstance(entry, str) and entry.strip():
+                    items.append(entry.strip())
 
         dedup: list[str] = []
         seen: set[str] = set()
-        for item in symbols:
+        for item in items:
             key = item.upper()
-            if key in seen:
-                continue
-            seen.add(key)
-            dedup.append(item)
+            if key not in seen:
+                seen.add(key)
+                dedup.append(item)
         return dedup
 
     def _resolve_path(self, payload: Any, path: str) -> Any:

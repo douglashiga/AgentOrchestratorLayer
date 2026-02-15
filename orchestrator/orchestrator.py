@@ -53,9 +53,9 @@ class Orchestrator:
         test_mode = self._is_test_mode(intent)
 
         # 1. Confidence Gating
-        # Keep general-domain responses responsive even when fallback confidence is low.
-        is_general_domain = intent.domain == "general"
-        if intent.confidence < self.confidence_threshold and not is_general_domain and not test_mode:
+        # Keep fallback-domain responses responsive even when confidence is low.
+        is_fallback = self._is_fallback_domain(intent.domain)
+        if intent.confidence < self.confidence_threshold and not is_fallback and not test_mode:
             logger.warning(
                 "Intent confidence too low: %.2f < %.2f",
                 intent.confidence,
@@ -134,6 +134,16 @@ class Orchestrator:
                 confidence=0.0,
                 metadata={"error": str(e)}
             )
+
+    def _is_fallback_domain(self, domain: str) -> bool:
+        """Check if a domain is the fallback domain via registry metadata."""
+        for cap_name in self.domain_registry.registered_capabilities:
+            meta = self.domain_registry.get_metadata(cap_name)
+            if isinstance(meta, dict) and str(meta.get("domain", "")).strip() == domain:
+                if meta.get("is_fallback_domain") is True:
+                    return True
+                break
+        return domain == "general"
 
     def _is_test_mode(self, intent: IntentOutput) -> bool:
         if self.test_mode_enabled:

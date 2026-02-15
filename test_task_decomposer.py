@@ -133,7 +133,20 @@ def test_method_contract_takes_precedence_over_legacy_composition() -> None:
 
 
 def test_multi_symbol_get_price_generates_parallel_dag() -> None:
-    decomposer = TaskDecomposer(capability_catalog=[])
+    decomposer = TaskDecomposer(capability_catalog=[
+        {
+            "domain": "finance",
+            "capability": "get_stock_price",
+            "metadata": {
+                "composition": {
+                    "multi_instance": {
+                        "list_param": "symbols",
+                        "single_param": "symbol",
+                    },
+                }
+            },
+        }
+    ])
     intent = IntentOutput(
         domain="finance",
         capability="get_stock_price",
@@ -160,7 +173,12 @@ def test_multi_symbol_notify_adds_notifier_followup_when_catalog_supports_it() -
                 "metadata": {
                     "composition": {
                         "followup_roles": ["notifier"],
+                        "triggering_parameter": "notify",
                         "enabled_if": {"path": "parameters.notify", "equals": True},
+                        "multi_instance": {
+                            "list_param": "symbols",
+                            "single_param": "symbol",
+                        },
                         "followup_required": False,
                         "followup_output_key": "notification",
                     }

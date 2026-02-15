@@ -169,22 +169,56 @@ class FunctionCallingPlanner:
             return False
         if self.model_selector is None:
             return False
-        if intent.domain == "general":
+        # Skip fallback domains (no composition planning needed).
+        if self._is_fallback_domain(intent.domain):
             return False
         if not self.capability_catalog:
             return False
-        # Reliability-first: only run the LLM planner when explicitly requested
-        # for composition/multi-step behavior.
-        if not (
-            (intent.parameters or {}).get("notify") is True
-            or (intent.parameters or {}).get("compose") is True
-        ):
+        # Reliability-first: only run the LLM planner when a composition
+        # trigger parameter is active.  Reads triggering params from catalog
+        # metadata instead of hardcoding parameter names.
+        if not self._has_composition_trigger(intent):
             return False
         if len(base_plan.steps) > 1 and self.mode != "required":
             return False
         if len(base_plan.steps) >= 4:
             return False
         return True
+
+    def _is_fallback_domain(self, domain: str) -> bool:
+        """Check if domain is the fallback (general) domain via catalog metadata."""
+        for entry in self.capability_catalog:
+            meta = entry.get("metadata")
+            if isinstance(meta, dict) and str(meta.get("domain", "")).strip() == domain:
+                if meta.get("is_fallback_domain") is True:
+                    return True
+        return domain == "general"
+
+    def _has_composition_trigger(self, intent: IntentOutput) -> bool:
+        """Check if any composition triggering parameter is active."""
+        params = intent.parameters or {}
+        # Check direct compose flag.
+        if params.get("compose") is True:
+            return True
+        # Check triggering_parameter from source capability's composition metadata.
+        entry = self._resolve_catalog_entry(intent.domain, intent.capability)
+        if entry:
+            meta = entry.get("metadata")
+            if isinstance(meta, dict):
+                composition = meta.get("composition")
+                if isinstance(composition, dict):
+                    trigger = composition.get("triggering_parameter")
+                    if isinstance(trigger, str) and trigger.strip():
+                        return params.get(trigger.strip()) is True
+                    # Legacy: infer from enabled_if path.
+                    enabled_if = composition.get("enabled_if")
+                    if isinstance(enabled_if, dict):
+                        path = str(enabled_if.get("path", "")).strip()
+                        if path.startswith("parameters."):
+                            param_name = path.split(".", 1)[1]
+                            return params.get(param_name) is True
+        # Final fallback: check for notify (backward compat).
+        return params.get("notify") is True
 
     def _propose_next_step(
         self,
@@ -240,8 +274,8 @@ class FunctionCallingPlanner:
             "}\n"
             "Rules:\n"
             "1. Add a step ONLY if it clearly improves the user outcome.\n"
-            "2. If user requested send/notify/share, add a communication/notifier capability when available.\n"
-            "3. Never add notifier capabilities unless intent.parameters.notify is true.\n"
+            "2. If user requested send/notify/share, add a follow-up capability with matching role when available.\n"
+            "3. Never add role-based follow-up capabilities unless the source capability's triggering parameter is true.\n"
             "4. Use memory_context values when they are relevant and deterministic.\n"
             "5. You may reference previous step output with placeholders like ${1.explanation}.\n"
             "6. If no extra action is needed, return decision=stop.\n"
@@ -365,20 +399,37 @@ class FunctionCallingPlanner:
         return None
 
     def _is_step_allowed_by_intent(self, intent: IntentOutput, catalog_entry: dict[str, Any]) -> bool:
-        """
-        Deterministic guardrail:
-        notifier follow-up steps are allowed only with explicit notify=true.
-        """
+        """Deterministic guardrail: role-based steps require their trigger parameter."""
         metadata = catalog_entry.get("metadata")
         if not isinstance(metadata, dict):
             return True
         composition = metadata.get("composition")
         if not isinstance(composition, dict):
             return True
-        role = str(composition.get("role", "")).strip().lower()
-        if role != "notifier":
+        role = str(composition.get("role", "")).strip()
+        if not role:
             return True
-        return bool((intent.parameters or {}).get("notify") is True)
+        # Find the source capability and check if its triggering parameter is set.
+        source_entry = self._resolve_catalog_entry(intent.domain, intent.capability)
+        if not source_entry:
+            return True
+        source_meta = source_entry.get("metadata")
+        if not isinstance(source_meta, dict):
+            return True
+        source_comp = source_meta.get("composition")
+        if not isinstance(source_comp, dict):
+            return True
+        # Read triggering_parameter or infer from enabled_if.
+        trigger = source_comp.get("triggering_parameter")
+        if not isinstance(trigger, str) or not trigger.strip():
+            enabled_if = source_comp.get("enabled_if")
+            if isinstance(enabled_if, dict):
+                path = str(enabled_if.get("path", "")).strip()
+                if path.startswith("parameters."):
+                    trigger = path.split(".", 1)[1]
+        if isinstance(trigger, str) and trigger.strip():
+            return bool((intent.parameters or {}).get(trigger.strip()) is True)
+        return True
 
     def _sanitize_params(self, catalog_entry: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         schema = catalog_entry.get("schema") or {}

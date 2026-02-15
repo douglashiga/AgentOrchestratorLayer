@@ -491,8 +491,15 @@ class IntentAdapter:
             confidence = min(0.7, max(0.25, score / 10.0))
             return domain, capability, confidence
 
+        # Prefer a catalog entry marked as fallback, then any general/chat, then first entry.
         for domain, capability in parsed_catalog:
-            if domain == "general" and capability == "chat":
+            entry = self._capability_catalog_entry(domain=domain, capability=capability)
+            if entry:
+                meta = self._parse_json_object(entry.get("metadata"))
+                if meta.get("is_fallback_capability") is True:
+                    return domain, capability, 0.0
+        for domain, capability in parsed_catalog:
+            if domain == "general":
                 return domain, capability, 0.0
 
         if parsed_catalog:
@@ -691,29 +698,56 @@ class IntentAdapter:
 
         return specs
 
-    def _infer_value_from_symbol_suffix(self, params: dict[str, Any], spec: dict[str, Any]) -> Any:
-        infer_map = spec.get("infer_from_symbol_suffix")
+    def _infer_value_from_suffix_map(
+        self,
+        params: dict[str, Any],
+        spec: dict[str, Any],
+        all_specs: dict[str, dict[str, Any]] | None = None,
+    ) -> Any:
+        """Infer a parameter value by matching a suffix on a sibling parameter.
+
+        Reads ``infer_from_suffix`` (preferred) or ``infer_from_symbol_suffix``
+        (legacy).  ``source_params`` in the spec lists which sibling parameters
+        to inspect.  When absent, scans ``all_specs`` for required string/array
+        params so no parameter names are hardcoded.
+        """
+        infer_map = spec.get("infer_from_suffix") or spec.get("infer_from_symbol_suffix")
         if not isinstance(infer_map, dict):
             return None
 
-        symbol_value: str | None = None
-        raw_symbol = params.get("symbol")
-        if isinstance(raw_symbol, str) and raw_symbol.strip():
-            symbol_value = raw_symbol.strip().upper()
-        else:
-            raw_symbols = params.get("symbols")
-            if isinstance(raw_symbols, list):
-                for item in raw_symbols:
-                    if isinstance(item, str) and item.strip():
-                        symbol_value = item.strip().upper()
-                        break
+        source_params: list[str] = []
+        raw_sources = spec.get("source_params")
+        if isinstance(raw_sources, list):
+            source_params = [str(s).strip() for s in raw_sources if str(s).strip()]
 
-        if not symbol_value:
+        if not source_params and isinstance(all_specs, dict):
+            for sibling_name, sibling_spec in all_specs.items():
+                if not isinstance(sibling_spec, dict):
+                    continue
+                stype = str(sibling_spec.get("type", "")).strip().lower()
+                if stype in ("string", "array") and sibling_spec.get("required"):
+                    source_params.append(str(sibling_name).strip())
+
+        source_value: str | None = None
+        for src in source_params:
+            raw = params.get(src)
+            if isinstance(raw, str) and raw.strip():
+                source_value = raw.strip().upper()
+                break
+            if isinstance(raw, list):
+                for item in raw:
+                    if isinstance(item, str) and item.strip():
+                        source_value = item.strip().upper()
+                        break
+                if source_value:
+                    break
+
+        if not source_value:
             return None
 
         for suffix_raw, inferred in infer_map.items():
             suffix = str(suffix_raw).strip().upper()
-            if suffix and symbol_value.endswith(suffix):
+            if suffix and source_value.endswith(suffix):
                 return inferred
         return None
 
@@ -786,7 +820,7 @@ class IntentAdapter:
                 continue
             value = normalized.get(key)
             if value in (None, ""):
-                inferred = self._infer_value_from_symbol_suffix(normalized, spec)
+                inferred = self._infer_value_from_suffix_map(normalized, spec, all_specs=specs)
                 if inferred not in (None, ""):
                     normalized[key] = inferred
                     value = inferred
@@ -1009,6 +1043,8 @@ Rules:
 6. Return ONLY the JSON object.
 """
 
+        # Legacy fallback: build a minimal catalog-free prompt from initial capabilities.
+        cap_block = json.dumps(self.capabilities, indent=2) if self.capabilities else "[]"
         return f"""You are an intent extraction engine. Your ONLY job is to analyze the user's message and return a structured JSON object.
 
 You MUST respond with ONLY a valid JSON object. No explanations, no markdown, no extra text.
@@ -1021,20 +1057,14 @@ The JSON must follow this exact schema:
   "confidence": <float 0.0-1.0>
 }}
 
-There are TWO domains:
-
-1. "general" — for greetings, casual conversation, questions about yourself, help requests, or anything NOT related to finance/stocks/markets.
-   - action: "chat"
-   - parameters: {{"message": "<the user's message>"}}
-
-2. "finance" — for anything related to stocks, markets, prices, options, fundamentals, dividends, company info, financial data.
-   Available actions:
-{json.dumps(self.capabilities, indent=2)}
+Available capabilities:
+{cap_block}
 
 Rules:
-1. FIRST decide the domain: if the message is about stocks, markets, prices, finance -> "finance". Otherwise -> "general".
-2. If finance action is unclear, select the closest finance action and reduce confidence.
-3. Return ONLY the JSON object.
+1. Choose the domain and action that best match the user's message.
+2. If the action is unclear, select the closest match and reduce confidence.
+3. For greetings or casual conversation, use domain "general" and action "chat".
+4. Return ONLY the JSON object.
 """
 
     def _build_analysis_prompt(self) -> str:

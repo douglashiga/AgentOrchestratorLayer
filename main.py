@@ -272,11 +272,56 @@ def _hint_match_score(query_norm: str, query_tokens: list[str], hint_text: str) 
     return score
 
 
-def _is_notifier_capability(metadata: dict[str, Any]) -> bool:
+def _is_fallback_domain(domain: str, registry: HandlerRegistry | None = None) -> bool:
+    """Check if a domain is marked as fallback in registry or is 'general'."""
+    if not domain:
+        return False
+    if registry is not None:
+        for cap in registry.registered_capabilities:
+            cap_meta = registry.get_metadata(cap)
+            if isinstance(cap_meta, dict) and str(cap_meta.get("domain", "")).strip() == domain:
+                if cap_meta.get("is_fallback_domain") is True:
+                    return True
+                break
+    return domain == "general"
+
+
+def _is_fallback_capability(domain: str, capability: str, registry: HandlerRegistry | None = None) -> bool:
+    """Check if a domain/capability pair is the fallback target."""
+    if registry is not None:
+        meta = registry.get_metadata(capability)
+        if isinstance(meta, dict) and meta.get("is_fallback_capability") is True:
+            return True
+    return domain == "general" and capability == "chat"
+
+
+def _has_composition_role(metadata: dict[str, Any], role: str = "notifier") -> bool:
     composition_meta = metadata.get("composition")
     if not isinstance(composition_meta, dict):
         return False
-    return str(composition_meta.get("role", "")).strip().lower() == "notifier"
+    return str(composition_meta.get("role", "")).strip().lower() == role.lower()
+
+
+def _composition_triggering_param(metadata: dict[str, Any]) -> str | None:
+    """Return the parameter name that triggers composition (e.g. 'notify').
+
+    Reads ``composition.triggering_parameter`` from metadata.  Falls back
+    to ``"notify"`` when a ``followup_roles`` list is present and the
+    ``enabled_if`` condition references ``parameters.notify``.
+    """
+    composition = metadata.get("composition")
+    if not isinstance(composition, dict):
+        return None
+    explicit = composition.get("triggering_parameter")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    # Legacy: infer from enabled_if path.
+    enabled_if = composition.get("enabled_if")
+    if isinstance(enabled_if, dict):
+        path = str(enabled_if.get("path", "")).strip()
+        if path.startswith("parameters."):
+            return path.split(".", 1)[1]
+    return None
 
 
 def _hint_values(payload: Any) -> list[str]:
@@ -348,7 +393,7 @@ def _looks_like_notify_request(
     best_score = 0.0
     for capability in registry.registered_capabilities:
         metadata = registry.get_metadata(capability)
-        if not isinstance(metadata, dict) or not _is_notifier_capability(metadata):
+        if not isinstance(metadata, dict) or not _has_composition_role(metadata):
             continue
         score = _capability_intent_score(
             query_norm=query_norm,
@@ -375,10 +420,10 @@ def _reroute_general_chat_from_registry(intent, registry, params: dict[str, Any]
         if not isinstance(metadata, dict):
             continue
         domain = str(metadata.get("domain", "")).strip()
-        if not domain or domain == "general":
+        if not domain or _is_fallback_domain(domain, registry):
             continue
 
-        if _is_notifier_capability(metadata):
+        if _has_composition_role(metadata):
             continue
 
         score = _capability_intent_score(
@@ -517,31 +562,58 @@ def _normalize_parameter_value(value: Any, spec: dict[str, Any]) -> Any:
     return text
 
 
-def _infer_value_from_symbol_suffix(params: dict[str, Any], spec: dict[str, Any]) -> Any:
-    infer_map = spec.get("infer_from_symbol_suffix")
+def _infer_value_from_suffix_map(
+    params: dict[str, Any],
+    spec: dict[str, Any],
+    all_specs: dict[str, dict[str, Any]] | None = None,
+) -> Any:
+    """Infer a parameter value by matching a suffix against another parameter's value.
+
+    The spec must declare ``infer_from_symbol_suffix`` (legacy) or the generic
+    ``infer_from_suffix`` with an explicit ``source_params`` list.  When
+    ``source_params`` is absent, the function scans all sibling specs for one
+    whose type is ``"string"`` and that is ``required``, giving backward-
+    compatible behaviour without hardcoding ``"symbol"`` / ``"symbols"``.
+    """
+    infer_map = spec.get("infer_from_suffix") or spec.get("infer_from_symbol_suffix")
     if not isinstance(infer_map, dict):
         return None
 
-    symbol_value: str | None = None
-    raw_symbol = params.get("symbol")
-    if isinstance(raw_symbol, str) and raw_symbol.strip():
-        symbol_value = raw_symbol.strip().upper()
-    else:
-        raw_symbols = params.get("symbols")
-        if isinstance(raw_symbols, list):
-            for item in raw_symbols:
-                if isinstance(item, str) and item.strip():
-                    symbol_value = item.strip().upper()
-                    break
+    # Determine which params to look up for the source value.
+    source_params: list[str] = []
+    raw_sources = spec.get("source_params")
+    if isinstance(raw_sources, list):
+        source_params = [str(s).strip() for s in raw_sources if str(s).strip()]
 
-    if not symbol_value:
+    # Fallback: scan sibling specs for required string params.
+    if not source_params and isinstance(all_specs, dict):
+        for sibling_name, sibling_spec in all_specs.items():
+            if not isinstance(sibling_spec, dict):
+                continue
+            stype = str(sibling_spec.get("type", "")).strip().lower()
+            if stype in ("string", "array") and sibling_spec.get("required"):
+                source_params.append(str(sibling_name).strip())
+
+    source_value: str | None = None
+    for src in source_params:
+        raw = params.get(src)
+        if isinstance(raw, str) and raw.strip():
+            source_value = raw.strip().upper()
+            break
+        if isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, str) and item.strip():
+                    source_value = item.strip().upper()
+                    break
+            if source_value:
+                break
+
+    if not source_value:
         return None
 
     for suffix_raw, inferred in infer_map.items():
         suffix = str(suffix_raw).strip().upper()
-        if not suffix:
-            continue
-        if symbol_value.endswith(suffix):
+        if suffix and source_value.endswith(suffix):
             return inferred
     return None
 
@@ -560,7 +632,7 @@ def _apply_parameter_contracts(params: dict[str, Any], metadata: dict[str, Any])
             continue
         value = normalized.get(key)
         if value in (None, ""):
-            inferred = _infer_value_from_symbol_suffix(normalized, spec)
+            inferred = _infer_value_from_suffix_map(normalized, spec, all_specs=parameter_specs)
             if inferred not in (None, ""):
                 normalized[key] = inferred
                 value = inferred
@@ -662,6 +734,90 @@ def _can_resolve_required_params_via_flow(metadata: dict[str, Any]) -> bool:
     return required.issubset(resolvable)
 
 
+def _apply_parameter_sources(
+    params: dict[str, Any],
+    metadata: dict[str, Any],
+    entry_request: "EntryRequest | None" = None,
+) -> None:
+    """Resolve parameter values from metadata-declared sources.
+
+    Capabilities may declare ``parameter_sources`` in their metadata:
+
+        "parameter_sources": {
+            "chat_id": {
+                "from_entry": "chat_id",
+                "from_env": "TELEGRAM_DEFAULT_CHAT_ID",
+                "aliases": ["group_id"],
+                "validation": "numeric_id"
+            }
+        }
+
+    For each entry the function fills the parameter if it is empty using:
+    1. An alias parameter already present in params.
+    2. The entry-request metadata (from_entry).
+    3. An environment variable (from_env).
+    If ``validation`` is ``"numeric_id"``, non-numeric values are replaced.
+    """
+    sources = metadata.get("parameter_sources")
+    if not isinstance(sources, dict):
+        return
+
+    entry_meta = (entry_request.metadata if entry_request else {}) or {}
+
+    for param_name, source_spec in sources.items():
+        if not isinstance(source_spec, dict):
+            continue
+        param_name = str(param_name).strip()
+        if not param_name:
+            continue
+
+        # Check if param already has a usable value.
+        current = params.get(param_name)
+        validation = str(source_spec.get("validation", "")).strip().lower()
+
+        # Collect candidate values (first non-empty wins).
+        candidates: list[str] = []
+
+        # 1. Alias parameters (e.g. group_id → chat_id).
+        alias_names = source_spec.get("aliases")
+        if isinstance(alias_names, list):
+            for alias in alias_names:
+                alias_val = params.get(str(alias).strip())
+                if isinstance(alias_val, str) and alias_val.strip():
+                    candidates.append(alias_val.strip())
+
+        # 2. Entry-request metadata.
+        from_entry = source_spec.get("from_entry")
+        if isinstance(from_entry, str) and from_entry.strip():
+            entry_val = entry_meta.get(from_entry.strip())
+            if isinstance(entry_val, (str, int)):
+                candidates.append(str(entry_val).strip())
+
+        # 3. Environment variable.
+        from_env = source_spec.get("from_env")
+        if isinstance(from_env, str) and from_env.strip():
+            env_val = os.getenv(from_env.strip(), "").strip()
+            if env_val:
+                candidates.append(env_val)
+
+        # Apply: fill if empty or replace if current fails validation.
+        def _passes_validation(val: str) -> bool:
+            if validation == "numeric_id":
+                return bool(re.fullmatch(r"-?\d+", val.strip()))
+            return True
+
+        if current in (None, "", []):
+            for c in candidates:
+                if _passes_validation(c):
+                    params[param_name] = c
+                    break
+        elif isinstance(current, str) and not _passes_validation(current):
+            for c in candidates:
+                if _passes_validation(c):
+                    params[param_name] = c
+                    break
+
+
 def _normalize_intent_parameters(intent, registry, entry_request: EntryRequest | None = None):
     """Normalize alias params and apply metadata defaults before planning/execution."""
     params = dict(intent.parameters or {})
@@ -675,7 +831,7 @@ def _normalize_intent_parameters(intent, registry, entry_request: EntryRequest |
             if cap_domain and cap_domain != intent.domain:
                 intent = intent.model_copy(update={"domain": cap_domain})
 
-    if intent.domain == "general" and capability == "chat":
+    if _is_fallback_capability(intent.domain, capability, registry):
         rerouted = _reroute_general_chat_from_registry(
             intent,
             registry,
@@ -691,47 +847,24 @@ def _normalize_intent_parameters(intent, registry, entry_request: EntryRequest |
     if not isinstance(metadata, dict):
         metadata = {}
 
-    is_notifier_capability = _is_notifier_capability(metadata)
-    if not is_notifier_capability:
-        if params.get("notify") is not True and _looks_like_notify_request(
+    is_followup_role_capability = _has_composition_role(metadata)
+    if not is_followup_role_capability:
+        trigger_param = _composition_triggering_param(metadata) or "notify"
+        if params.get(trigger_param) is not True and _looks_like_notify_request(
             intent.original_query,
             registry,
             force_domain_routing=INTENT_FORCE_DOMAIN_ROUTING,
         ):
-            params["notify"] = True
+            params[trigger_param] = True
 
-    # Communication fixes: chat target normalization for telegram capabilities.
-    if str(metadata.get("channel", "")).strip().lower() == "telegram":
-        default_chat_id = os.getenv("TELEGRAM_DEFAULT_CHAT_ID", "").strip()
-        source_chat_id = ""
-        if entry_request and entry_request.metadata.get("source") == "telegram":
-            source_chat_id = str(entry_request.metadata.get("chat_id", "")).strip()
-
-        has_group_id = _capability_declares_parameter(metadata, "group_id")
-        has_chat_id = _capability_declares_parameter(metadata, "chat_id")
-
-        if has_group_id:
-            if not params.get("group_id") and params.get("chat_id"):
-                params["group_id"] = params.get("chat_id")
-            if not params.get("group_id") and source_chat_id:
-                params["group_id"] = source_chat_id
-            if not params.get("group_id") and default_chat_id:
-                params["group_id"] = default_chat_id
-            if params.get("group_id") and not _looks_like_chat_id(str(params["group_id"])):
-                if source_chat_id:
-                    params["group_id"] = source_chat_id
-                elif default_chat_id:
-                    params["group_id"] = default_chat_id
-        if has_chat_id and not has_group_id:
-            if not params.get("chat_id") and source_chat_id:
-                params["chat_id"] = source_chat_id
-            if not params.get("chat_id") and default_chat_id:
-                params["chat_id"] = default_chat_id
-            if params.get("chat_id") and not _looks_like_chat_id(str(params["chat_id"])):
-                if source_chat_id:
-                    params["chat_id"] = source_chat_id
-                elif default_chat_id:
-                    params["chat_id"] = default_chat_id
+    # Metadata-driven parameter source resolution.
+    # Capabilities can declare ``parameter_sources`` to auto-fill parameters
+    # from environment variables or entry-request metadata without hardcoding.
+    _apply_parameter_sources(
+        params=params,
+        metadata=metadata,
+        entry_request=entry_request,
+    )
 
     # Apply metadata defaults for missing/null params.
     for key, value in metadata.items():
@@ -745,7 +878,7 @@ def _normalize_intent_parameters(intent, registry, entry_request: EntryRequest |
     confidence = float(intent.confidence)
     if (
         registry is not None
-        and intent.domain != "general"
+        and not _is_fallback_domain(intent.domain, registry)
         and capability
         and registry.resolve_capability(capability) is not None
     ):
@@ -764,7 +897,9 @@ def _normalize_intent_parameters(intent, registry, entry_request: EntryRequest |
         elif _can_resolve_required_params_via_flow(metadata) and capability_score >= min_intent_score:
             confidence = max(confidence, ORCHESTRATOR_CONFIDENCE_THRESHOLD)
 
-    if params.get("notify") is True and intent.domain != "general":
+    # Boost confidence when a composition trigger is active.
+    comp_trigger = _composition_triggering_param(metadata)
+    if comp_trigger and params.get(comp_trigger) is True and not _is_fallback_domain(intent.domain, registry):
         confidence = max(confidence, max(0.95, ORCHESTRATOR_CONFIDENCE_THRESHOLD))
 
     return intent.model_copy(update={"parameters": params, "confidence": confidence})
@@ -773,7 +908,7 @@ def _normalize_intent_parameters(intent, registry, entry_request: EntryRequest |
 def _should_soft_confirm(intent) -> bool:
     if not SOFT_CONFIRMATION_ENABLED:
         return False
-    if intent.domain == "general":
+    if _is_fallback_domain(intent.domain):
         return False
     if (intent.parameters or {}).get("notify") is True:
         return False

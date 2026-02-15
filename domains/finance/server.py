@@ -266,7 +266,8 @@ METADATA_OVERRIDES = {
             },
             "currency": {
                 "type": "string",
-                "infer_from_symbol_suffix": {
+                "source_params": ["symbol", "symbols"],
+                "infer_from_suffix": {
                     ".SA": "BRL",
                     ".ST": "SEK",
                 },
@@ -287,7 +288,8 @@ METADATA_OVERRIDES = {
             },
             "exchange": {
                 "type": "string",
-                "infer_from_symbol_suffix": {
+                "source_params": ["symbol", "symbols"],
+                "infer_from_suffix": {
                     ".SA": "BOVESPA",
                     ".ST": "SFB",
                 },
@@ -310,12 +312,16 @@ METADATA_OVERRIDES = {
     "get_historical_data": {
         "intent_description": (
             "Get historical OHLC price data for a symbol and period. "
-            "Use for history, chart, and time-series requests."
+            "Use for price history, chart, time-series, and performance-over-time requests."
         ),
         "intent_hints": {
             "keywords": [
-                "historico",
-                "histórico",
+                "historico da",
+                "histórico da",
+                "historico de cotacao",
+                "histórico de cotação",
+                "historico de preco",
+                "histórico de preço",
                 "grafico",
                 "gráfico",
                 "serie historica",
@@ -324,12 +330,11 @@ METADATA_OVERRIDES = {
                 "dados históricos",
                 "preco nos ultimos",
                 "preço nos últimos",
-                "evolucao",
-                "evolução",
-                "variacao",
-                "variação",
-                "desempenho",
-                "performance",
+                "evolucao da",
+                "evolução da",
+                "variacao da",
+                "variação da",
+                "desempenho da",
                 "nos ultimos dias",
                 "nos últimos dias",
                 "ultimo mes",
@@ -606,8 +611,8 @@ METADATA_OVERRIDES = {
     },
     "compare_fundamentals": {
         "intent_description": (
-            "Compare fundamental metrics for multiple stocks. "
-            "Use when user asks to compare companies by valuation/profitability."
+            "Compare fundamental metrics for multiple stocks side by side. "
+            "Use ONLY when user explicitly asks to compare two or more companies."
         ),
         "intent_hints": {
             "keywords": [
@@ -616,13 +621,11 @@ METADATA_OVERRIDES = {
                 "comparar acoes",
                 "comparar ações",
                 "valuation comparativo",
-                "comparacao",
-                "comparação",
-                "versus",
-                "qual melhor entre",
                 "comparar empresas",
                 "diferenca entre",
                 "diferença entre",
+                "versus fundamentos",
+                "qual melhor entre",
             ],
             "examples": [
                 "compare os fundamentos de vale3 e petr4",
@@ -684,24 +687,30 @@ METADATA_OVERRIDES = {
         "explanation_template": "Pipeline health status overview.",
     },
     "get_fundamentals": {
-        "intent_description": "Get fundamentals for a specific stock symbol.",
+        "intent_description": (
+            "Get fundamental analysis data for a SINGLE stock symbol. "
+            "Use when user asks about indicators, valuation, or fundamentals of one specific stock."
+        ),
         "intent_hints": {
             "keywords": [
-                "fundamentos",
-                "fundamental",
-                "valuation",
+                "fundamentos da",
+                "fundamentos de",
+                "fundamental da",
+                "valuation da",
+                "valuation de",
                 "balanco da empresa",
                 "balanço da empresa",
-                "indicadores",
-                "p/l",
-                "pe ratio",
-                "roe",
-                "margem",
-                "ebitda",
-                "multiplos",
-                "múltiplos",
-                "analise fundamentalista",
-                "análise fundamentalista",
+                "indicadores da",
+                "indicadores de",
+                "p/l da",
+                "pe ratio da",
+                "roe da",
+                "margem da",
+                "ebitda da",
+                "multiplos da",
+                "múltiplos da",
+                "analise fundamentalista da",
+                "análise fundamentalista da",
             ],
             "examples": [
                 "fundamentos da vale3",
@@ -717,17 +726,22 @@ METADATA_OVERRIDES = {
         "explanation_template": "Fundamentals data for {symbol} ({market} market).",
     },
     "get_dividends": {
-        "intent_description": "Get dividend history for a specific stock symbol.",
+        "intent_description": (
+            "Get dividend history for a SPECIFIC stock symbol. "
+            "Use when user mentions a specific ticker/company and asks about dividends."
+        ),
         "intent_hints": {
             "keywords": [
                 "dividendos da",
+                "dividendos de",
                 "historico de dividendos",
                 "histórico de dividendos",
                 "dividend history",
-                "proventos",
-                "jcp",
-                "juros sobre capital",
-                "pagamentos de dividendos",
+                "proventos da",
+                "proventos de",
+                "jcp da",
+                "juros sobre capital da",
+                "pagamentos de dividendos da",
                 "quando paga dividendos",
             ],
             "examples": [
@@ -965,9 +979,14 @@ def get_manifest():
             "composition",
             {
                 "followup_roles": ["notifier"],
+                "triggering_parameter": "notify",
                 "enabled_if": {
                     "path": "parameters.notify",
                     "equals": True,
+                },
+                "multi_instance": {
+                    "list_param": "symbols",
+                    "single_param": "symbol",
                 },
                 "followup_required": False,
                 "followup_output_key": "notification",
