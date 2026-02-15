@@ -62,7 +62,8 @@ class RegistryLoader:
                     if name == "finance":
                         handler = FinanceDomainHandler(
                             skill_gateway=context["skill_gateway"],
-                            registry=self.registry
+                            registry=self.registry,
+                            model_selector=context.get("model_selector"),
                         )
                     elif name == "general":
                         handler = GeneralDomainHandler(

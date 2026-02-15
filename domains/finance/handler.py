@@ -4,10 +4,10 @@ Finance Domain Handler.
 Responsibility:
 - Orchestrate internally: Context Resolver → Skill Gateway → Strategy Core
 - Return Decision
+- Handle specialist knowledge queries via LLM with domain-expert context
 
 Prohibitions:
-- No LLM usage
-- No bypassing gateway
+- No bypassing gateway for data retrieval
 - No global state
 """
 
@@ -15,13 +15,13 @@ import logging
 import re
 from typing import Any
 
-from shared.models import Decision, DomainOutput, ExecutionContext, IntentOutput
+from shared.models import Decision, DomainOutput, ExecutionContext, IntentOutput, ModelPolicy
 from domains.finance.context import ContextResolver
 from domains.finance.core import StrategyCore
 from skills.gateway import SkillGateway
 from domains.finance.schemas import (
-    TopGainersInput, TopLosersInput, StockPriceInput, 
-    HistoricalDataInput, StockScreenerInput, 
+    TopGainersInput, TopLosersInput, StockPriceInput,
+    HistoricalDataInput, StockScreenerInput,
     TechnicalSignalsInput, CompareFundamentalsInput
 )
 from pydantic import ValidationError
@@ -33,11 +33,17 @@ logger = logging.getLogger(__name__)
 class FinanceDomainHandler:
     """Finance domain handler — orchestrates context, skills, and strategy."""
 
-    def __init__(self, skill_gateway: SkillGateway, registry: Any = None):
+    def __init__(
+        self,
+        skill_gateway: SkillGateway,
+        registry: Any = None,
+        model_selector: Any = None,
+    ):
         self.context_resolver = ContextResolver()
         self.strategy_core = StrategyCore()
         self.skill_gateway = skill_gateway
         self.registry = registry
+        self.model_selector = model_selector
         self.symbol_aliases: dict[str, str] = {
             "PETRO": "PETR4.SA",
             "PETROBRAS": "PETR4.SA",
@@ -100,7 +106,12 @@ class FinanceDomainHandler:
                             metadata={"error": str(e)}
                         )
 
-            # 2. Fallback to Generic Execution (Legacy)
+            # 2. Check if this is a specialist (knowledge) capability.
+            cap_metadata = self._get_capability_metadata(method_name)
+            if cap_metadata.get("type") == "specialist":
+                return await self._handle_specialist_query(intent, resolved_params, cap_metadata)
+
+            # 3. Fallback to Generic Execution (Legacy)
             return await self._generic_execute(intent, resolved_params)
 
         except Exception as e:
@@ -750,6 +761,169 @@ class FinanceDomainHandler:
             name = str(item.get("name") or item.get("company") or item.get("description") or "").strip()
             candidates.append({"symbol": symbol_norm, "name": name})
         return candidates
+
+    # ─── Specialist Knowledge Queries ──────────────────────────────────
+
+    async def _handle_specialist_query(
+        self,
+        intent: IntentOutput,
+        params: dict[str, Any],
+        metadata: dict[str, Any],
+    ) -> DomainOutput:
+        """Handle knowledge/analysis queries using LLM with specialist context.
+
+        The capability metadata declares ``specialist_config`` with a list of
+        experts.  Each expert has: id, system_prompt, topics, and optional
+        data_capabilities to fetch context data before answering.
+        """
+        if self.model_selector is None:
+            return DomainOutput(
+                status="failure",
+                result={},
+                explanation="Specialist queries require a model selector but none is configured.",
+                confidence=0.0,
+            )
+
+        specialist_config = metadata.get("specialist_config", {})
+        if not isinstance(specialist_config, dict):
+            specialist_config = {}
+
+        experts = specialist_config.get("experts", [])
+        if not isinstance(experts, list):
+            experts = []
+
+        query = params.get("message") or params.get("question") or intent.original_query or ""
+
+        # Select best expert by topic matching.
+        expert = self._select_expert(query, experts)
+        system_prompt = expert.get("system_prompt", "") if expert else ""
+        if not system_prompt:
+            system_prompt = specialist_config.get(
+                "default_system_prompt",
+                "You are a knowledgeable finance expert. Answer clearly and concisely in the user's language.",
+            )
+
+        # Optionally fetch data context via data_capabilities.
+        data_context = ""
+        if expert:
+            data_caps = expert.get("data_capabilities", [])
+            if isinstance(data_caps, list) and data_caps:
+                data_context = self._fetch_specialist_data_context(intent, params, data_caps)
+
+        # Build messages and call LLM.
+        messages = [{"role": "system", "content": system_prompt}]
+        if data_context:
+            messages.append({
+                "role": "system",
+                "content": f"Here is relevant data for context:\n{data_context}",
+            })
+        messages.append({"role": "user", "content": query})
+
+        policy = ModelPolicy(
+            model_name=specialist_config.get("model_name", ""),
+            temperature=float(specialist_config.get("temperature", 0.4)),
+            timeout_seconds=float(specialist_config.get("timeout_seconds", 30.0)),
+            max_retries=2,
+            json_mode=False,
+        )
+
+        try:
+            response = self.model_selector.generate(messages=messages, policy=policy)
+            text = response.strip() if isinstance(response, str) else str(response)
+        except Exception as e:
+            logger.error("Specialist LLM call failed: %s", e)
+            return DomainOutput(
+                status="failure",
+                result={},
+                explanation=f"Erro ao consultar o especialista: {e}",
+                confidence=0.0,
+                metadata={"error": str(e)},
+            )
+
+        return DomainOutput(
+            status="success",
+            result={
+                "response": text,
+                "expert_id": expert.get("id", "general") if expert else "general",
+            },
+            explanation=text,
+            confidence=1.0,
+            metadata={
+                "type": "specialist",
+                "expert_id": expert.get("id", "general") if expert else "general",
+            },
+        )
+
+    def _select_expert(
+        self,
+        query: str,
+        experts: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """Select the best expert by matching query tokens against expert topics."""
+        if not experts:
+            return None
+        if len(experts) == 1:
+            return experts[0]
+
+        query_lower = (query or "").lower()
+        query_tokens = set(re.findall(r"[a-z0-9]+", query_lower))
+
+        best_score = -1
+        best_expert = None
+        for expert in experts:
+            topics = expert.get("topics", [])
+            if not isinstance(topics, list):
+                continue
+            score = 0
+            for topic in topics:
+                topic_lower = str(topic).lower()
+                # Exact substring match in query.
+                if topic_lower in query_lower:
+                    score += 3
+                # Token overlap.
+                topic_tokens = set(re.findall(r"[a-z0-9]+", topic_lower))
+                score += len(query_tokens & topic_tokens)
+            if score > best_score:
+                best_score = score
+                best_expert = expert
+
+        return best_expert
+
+    def _fetch_specialist_data_context(
+        self,
+        intent: IntentOutput,
+        params: dict[str, Any],
+        data_capabilities: list[str],
+    ) -> str:
+        """Fetch data from specified capabilities to enrich the specialist answer."""
+        # Only fetch if there's a symbol/ticker in the query.
+        symbol = params.get("symbol")
+        if not symbol:
+            symbol = self._infer_symbol_from_query_text(intent.original_query or "")
+        if not symbol:
+            return ""
+
+        context_parts: list[str] = []
+        for cap_name in data_capabilities:
+            cap_name = str(cap_name).strip()
+            if not cap_name:
+                continue
+            try:
+                skill_data = self.skill_gateway.execute(
+                    "mcp_finance",
+                    {"_action": cap_name, "symbol": symbol},
+                )
+                if skill_data.get("success"):
+                    import json
+                    data = skill_data.get("data", {})
+                    # Truncate large payloads to avoid bloating the prompt.
+                    data_str = json.dumps(data, ensure_ascii=False, default=str)
+                    if len(data_str) > 2000:
+                        data_str = data_str[:2000] + "..."
+                    context_parts.append(f"[{cap_name}]: {data_str}")
+            except Exception as e:
+                logger.warning("Failed to fetch data context from %s: %s", cap_name, e)
+        return "\n".join(context_parts)
 
     def _fallback_stock_price_from_cache(
         self,

@@ -62,8 +62,22 @@ async def lifespan(app: FastAPI):
         cap_metadata.setdefault("description", cap.get("description", ""))
         mock_registry.register_capability(cap["name"], None, metadata=cap_metadata)
 
-    handler = FinanceDomainHandler(skill_gateway=skill_gateway, registry=mock_registry)
-    
+    # Initialize ModelSelector for specialist queries (optional — degrades gracefully).
+    specialist_model_selector = None
+    try:
+        from models.selector import ModelSelector
+        specialist_model_selector = ModelSelector(
+            ollama_url=os.getenv("OLLAMA_URL", "http://localhost:11434"),
+        )
+    except Exception as e:
+        logger.warning("ModelSelector not available for specialist queries: %s", e)
+
+    handler = FinanceDomainHandler(
+        skill_gateway=skill_gateway,
+        registry=mock_registry,
+        model_selector=specialist_model_selector,
+    )
+
     yield
     
     logger.info("Shutting down Finance Server...")
@@ -858,6 +872,181 @@ METADATA_OVERRIDES = {
         },
         "explanation_template": "Yahoo search results for '{params[query]}'.",
     },
+    "ask_finance_expert": {
+        "type": "specialist",
+        "intent_description": (
+            "Answer open-ended finance knowledge questions about strategies, concepts, "
+            "analysis methodologies, derivatives, options strategies, and market theory. "
+            "Use when the user asks HOW something works or WHAT a concept means in finance."
+        ),
+        "intent_hints": {
+            "keywords": [
+                "como funciona",
+                "o que e",
+                "o que é",
+                "me explica",
+                "me explique",
+                "qual a diferenca entre",
+                "qual a diferença entre",
+                "estrategia de",
+                "estratégia de",
+                "the wheel",
+                "covered call",
+                "cash secured put",
+                "iron condor",
+                "straddle",
+                "strangle",
+                "analise tecnica",
+                "análise técnica",
+                "analise fundamentalista",
+                "análise fundamentalista",
+                "o que significa",
+                "como calcular",
+                "como analisar",
+                "quando usar",
+                "para que serve",
+                "como interpretar",
+                "o que sao",
+                "o que são",
+                "como investir",
+                "como operar",
+                "como montar",
+                "suporte e resistencia",
+                "suporte e resistência",
+                "media movel",
+                "média móvel",
+                "bandas de bollinger",
+                "fibonacci",
+                "elliott",
+                "candlestick",
+                "grafico de velas",
+                "gráfico de velas",
+                "risco e retorno",
+                "gestao de risco",
+                "gestão de risco",
+                "how does",
+                "what is",
+                "explain",
+            ],
+            "examples": [
+                "como funciona o the wheel?",
+                "me explica covered call",
+                "o que e analise tecnica?",
+                "qual a diferenca entre analise tecnica e fundamentalista?",
+                "como funciona iron condor?",
+                "o que significa rsi sobrevendido?",
+                "como interpretar bandas de bollinger?",
+                "como calcular o preco justo de uma acao?",
+                "como montar uma estrategia de dividendos?",
+                "para que serve o macd?",
+            ],
+        },
+        "parameter_specs": {
+            "question": {
+                "type": "string",
+                "required": True,
+                "description": "The user's finance question",
+            },
+        },
+        "specialist_config": {
+            "default_system_prompt": (
+                "You are a knowledgeable finance expert. Answer clearly and concisely "
+                "in the user's language. Use examples when helpful."
+            ),
+            "temperature": 0.4,
+            "timeout_seconds": 45,
+            "experts": [
+                {
+                    "id": "technical_analysis",
+                    "system_prompt": (
+                        "You are an expert in technical analysis of financial markets. "
+                        "You have deep knowledge of chart patterns, indicators (RSI, MACD, "
+                        "Bollinger Bands, Moving Averages, Fibonacci, Elliott Waves), "
+                        "support/resistance levels, volume analysis, and price action. "
+                        "Explain concepts clearly with practical examples. "
+                        "Answer in the user's language."
+                    ),
+                    "topics": [
+                        "analise tecnica", "análise técnica", "technical analysis",
+                        "rsi", "macd", "bollinger", "media movel", "média móvel",
+                        "moving average", "fibonacci", "elliott", "candlestick",
+                        "suporte e resistencia", "suporte e resistência",
+                        "support and resistance", "volume", "price action",
+                        "grafico", "gráfico", "chart", "tendencia", "tendência",
+                        "indicador", "indicator", "overbought", "oversold",
+                        "sobrecomprado", "sobrevendido",
+                    ],
+                    "data_capabilities": ["get_historical_data", "get_technical_signals"],
+                },
+                {
+                    "id": "fundamental_analysis",
+                    "system_prompt": (
+                        "You are an expert in fundamental analysis of companies and stocks. "
+                        "You have deep knowledge of financial statements, valuation metrics "
+                        "(P/E, P/B, ROE, ROA, EV/EBITDA, dividend yield), DCF models, "
+                        "competitive analysis, and intrinsic value calculation. "
+                        "Explain concepts clearly with practical examples. "
+                        "Answer in the user's language."
+                    ),
+                    "topics": [
+                        "analise fundamentalista", "análise fundamentalista",
+                        "fundamental analysis", "valuation", "p/l", "p/e",
+                        "roe", "roa", "ebitda", "margem", "margin",
+                        "balanco", "balanço", "balance sheet", "dre",
+                        "fluxo de caixa", "cash flow", "dividendo", "dividend",
+                        "preco justo", "preço justo", "fair value", "intrinsic value",
+                        "valor intrinseco", "valor intrínseco", "multiplos", "múltiplos",
+                        "lucro", "receita", "revenue", "earnings",
+                    ],
+                    "data_capabilities": ["get_fundamentals", "get_financial_statements"],
+                },
+                {
+                    "id": "derivatives",
+                    "system_prompt": (
+                        "You are an expert in financial derivatives, especially stock options. "
+                        "You have deep knowledge of options strategies (covered calls, "
+                        "cash-secured puts, the wheel, iron condors, straddles, strangles, "
+                        "spreads, butterflies), Greeks (delta, gamma, theta, vega), "
+                        "implied volatility, and risk management for derivatives. "
+                        "Explain concepts clearly with practical examples. "
+                        "Answer in the user's language."
+                    ),
+                    "topics": [
+                        "opcao", "opção", "opcoes", "opções", "option", "options",
+                        "derivativo", "derivative", "covered call", "cash secured put",
+                        "the wheel", "iron condor", "straddle", "strangle",
+                        "spread", "butterfly", "collar", "protective put",
+                        "greeks", "gregas", "delta", "gamma", "theta", "vega",
+                        "volatilidade", "volatility", "implied volatility",
+                        "strike", "exercicio", "exercício", "vencimento",
+                        "expiration", "premium", "premio", "prêmio",
+                    ],
+                    "data_capabilities": ["get_option_chain", "get_option_greeks"],
+                },
+                {
+                    "id": "general_finance",
+                    "system_prompt": (
+                        "You are a knowledgeable finance expert covering investment strategies, "
+                        "portfolio management, risk management, asset allocation, "
+                        "market structure, and financial concepts. "
+                        "Explain concepts clearly with practical examples. "
+                        "Answer in the user's language."
+                    ),
+                    "topics": [
+                        "investimento", "investment", "carteira", "portfolio",
+                        "diversificacao", "diversificação", "diversification",
+                        "risco", "risk", "retorno", "return",
+                        "alocacao", "alocação", "allocation",
+                        "renda fixa", "fixed income", "renda variavel", "renda variável",
+                        "etf", "fundo", "fund", "cdi", "selic", "ipca",
+                        "estrategia", "estratégia", "strategy",
+                    ],
+                    "data_capabilities": [],
+                },
+            ],
+        },
+        "explanation_template": "{result[response]}",
+    },
 }
 
 
@@ -1003,6 +1192,32 @@ def get_manifest():
             "description": description,
             "schema": schema, # Raw JSON Schema from MCP
             "metadata": merged_metadata
+        })
+
+    # 3. Add non-MCP capabilities declared only in METADATA_OVERRIDES
+    #    (e.g. specialist/knowledge capabilities that don't map to an MCP tool).
+    mcp_tool_names = {tool["name"] for tool in raw_tools}
+    for override_name, overrides in METADATA_OVERRIDES.items():
+        if override_name in mcp_tool_names:
+            continue  # Already handled above
+        merged_metadata = dict(overrides)
+        override_parameter_specs = (
+            overrides.get("parameter_specs")
+            if isinstance(overrides.get("parameter_specs"), dict)
+            else {}
+        )
+        if override_parameter_specs:
+            merged_metadata["parameter_specs"] = _merge_parameter_specs(
+                schema_specs={},
+                override_specs=override_parameter_specs,
+            )
+        merged_metadata.setdefault("schema", {})
+        description = str(overrides.get("intent_description", "")).strip() or override_name
+        capabilities.append({
+            "name": override_name,
+            "description": description,
+            "schema": merged_metadata.get("schema", {}),
+            "metadata": merged_metadata,
         })
 
     return {
