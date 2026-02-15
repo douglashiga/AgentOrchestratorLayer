@@ -58,8 +58,7 @@ services:
       - PLANNER_TIMEOUT_SECONDS=${PLANNER_TIMEOUT_SECONDS:-20}
       - GENERAL_FASTPATH_ENABLED=${GENERAL_FASTPATH_ENABLED:-true}
     volumes:
-      - ./registry.db:/app/registry.db
-      - ./agent.db:/app/agent.db
+      - agent-data:/app
       - ./domains.bootstrap.json:/app/domains.bootstrap.json:ro
     depends_on:
       - finance-server
@@ -156,5 +155,6 @@ networks:
 
 volumes:
   db-data:
+  agent-data:
   agent-api-data:
   open-webui-data:
