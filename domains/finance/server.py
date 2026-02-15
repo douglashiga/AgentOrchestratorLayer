@@ -23,6 +23,7 @@ from fastapi import FastAPI, HTTPException
 
 from shared.models import IntentOutput, DomainOutput
 from domains.finance.handler import FinanceDomainHandler
+from domains.finance.config import MARKET_ALIASES as CONFIG_MARKET_ALIASES
 from skills.gateway import SkillGateway
 from skills.registry import SkillRegistry
 from skills.implementations.mcp_adapter import MCPAdapter
@@ -78,22 +79,10 @@ def health_check():
 
 # Static Metadata Overrides (Templates & Rules)
 # This enriches the raw MCP tools with Orchestrator-specific UI/Logic hints.
+# Base market aliases from config, plus any non-focus exchanges for reference
 MARKET_ALIASES = {
-    "BOVESPA": "BR",
-    "IBOVESPA": "BR",
-    "IBOV": "BR",
-    "B3": "BR",
-    "BRASIL": "BR",
-    "BRAZIL": "BR",
-    "NYSE": "US",
-    "NASDAQ": "US",
-    "EUA": "US",
-    "USA": "US",
-    "US": "US",
-    "SUECIA": "SE",
-    "SUÉCIA": "SE",
-    "SWEDEN": "SE",
-    "STOCKHOLM": "SE",
+    **CONFIG_MARKET_ALIASES,
+    # Non-focus exchanges (for reference, but not prioritized)
     "HONG KONG": "HK",
     "HONGKONG": "HK",
     "HKEX": "HK",
