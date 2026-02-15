@@ -163,6 +163,62 @@ def test_normalize_routes_plain_company_token_to_price_capability() -> None:
     assert normalized.parameters.get("exchange") == "SMART"
 
 
+def test_normalize_routes_bovespa_gainers_query_to_top_gainers() -> None:
+    registry = HandlerRegistry()
+    registry.register_capability(
+        "get_stock_price",
+        handler=object(),
+        metadata={
+            "domain": "finance",
+            "description": "Get stock price by symbol.",
+            "intent_hints": {
+                "keywords": ["qual o valor", "preco", "cotacao"],
+            },
+            "domain_intent_hints": {
+                "keywords": ["bovespa", "ibov", "mercado"],
+            },
+            "parameter_specs": {"symbol": {"type": "string", "required": True}},
+        },
+    )
+    registry.register_capability(
+        "get_top_gainers",
+        handler=object(),
+        metadata={
+            "domain": "finance",
+            "description": "List top gainers.",
+            "intent_hints": {
+                "keywords": ["maiores altas", "maiores ganhos", "top gainers"],
+            },
+            "domain_intent_hints": {
+                "keywords": ["bovespa", "ibov", "mercado"],
+            },
+            "parameter_specs": {
+                "market": {
+                    "type": "string",
+                    "required": True,
+                    "aliases": {"BOVESPA": "BR", "IBOVESPA": "BR", "IBOV": "BR"},
+                    "normalization": {"case": "upper"},
+                },
+                "period": {"type": "string", "default": "1d"},
+            },
+        },
+    )
+
+    raw = IntentOutput(
+        domain="general",
+        capability="chat",
+        confidence=0.3,
+        parameters={"message": "quais os maiores ganhos do bovespa hoje?"},
+        original_query="quais os maiores ganhos do bovespa hoje?",
+    )
+
+    normalized = _normalize_intent_parameters(raw, registry, entry_request=None)
+    assert normalized.domain == "finance"
+    assert normalized.capability == "get_top_gainers"
+    assert normalized.parameters.get("market") == "BR"
+    assert normalized.parameters.get("period") == "1d"
+
+
 def test_normalize_canonicalizes_domain_from_registered_capability_metadata() -> None:
     registry = _registry_with_stock_price()
     raw = IntentOutput(

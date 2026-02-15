@@ -279,40 +279,19 @@ def _is_notifier_capability(metadata: dict[str, Any]) -> bool:
     return str(composition_meta.get("role", "")).strip().lower() == "notifier"
 
 
-def _capability_hints(capability: str, metadata: dict[str, Any]) -> list[str]:
-    hints: list[str] = []
-    cap_hint = str(capability).replace("_", " ").strip()
-    if cap_hint:
-        hints.append(cap_hint)
-
-    domain_description = str(metadata.get("domain_description", "")).strip()
-    if domain_description:
-        hints.append(domain_description)
-
-    description = str(metadata.get("description", "")).strip()
-    if description:
-        hints.append(description)
-
-    domain_hints = metadata.get("domain_intent_hints")
-    if isinstance(domain_hints, dict):
-        for key in ("keywords", "examples"):
-            values = domain_hints.get(key)
-            if isinstance(values, list):
-                for value in values:
-                    text = str(value).strip()
-                    if text:
-                        hints.append(text)
-
-    intent_hints = metadata.get("intent_hints")
-    if isinstance(intent_hints, dict):
-        for key in ("keywords", "examples"):
-            values = intent_hints.get(key)
-            if isinstance(values, list):
-                for value in values:
-                    text = str(value).strip()
-                    if text:
-                        hints.append(text)
-    return hints
+def _hint_values(payload: Any) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    values: list[str] = []
+    for key in ("keywords", "examples"):
+        raw = payload.get(key)
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            text = str(item).strip()
+            if text:
+                values.append(text)
+    return values
 
 
 def _capability_intent_score(
@@ -321,10 +300,31 @@ def _capability_intent_score(
     capability: str,
     metadata: dict[str, Any],
 ) -> float:
-    score = 0.0
-    for hint in _capability_hints(capability=capability, metadata=metadata):
-        score = max(score, _hint_match_score(query_norm, query_tokens, hint))
-    return score
+    specific_hints: list[str] = []
+    cap_hint = str(capability).replace("_", " ").strip()
+    if cap_hint:
+        specific_hints.append(cap_hint)
+    description = str(metadata.get("description", "")).strip()
+    if description:
+        specific_hints.append(description)
+    specific_hints.extend(_hint_values(metadata.get("intent_hints")))
+
+    domain_hints: list[str] = []
+    domain_description = str(metadata.get("domain_description", "")).strip()
+    if domain_description:
+        domain_hints.append(domain_description)
+    domain_hints.extend(_hint_values(metadata.get("domain_intent_hints")))
+
+    specific_score = 0.0
+    for hint in specific_hints:
+        specific_score = max(specific_score, _hint_match_score(query_norm, query_tokens, hint))
+
+    domain_score = 0.0
+    for hint in domain_hints:
+        domain_score = max(domain_score, _hint_match_score(query_norm, query_tokens, hint))
+
+    # Domain hints identify the area; capability hints must dominate method choice.
+    return specific_score + (domain_score * 0.1)
 
 
 def _intent_match_min_score(force_domain_routing: bool) -> float:

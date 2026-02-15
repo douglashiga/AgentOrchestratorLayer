@@ -133,7 +133,7 @@ class IntentAdapter:
         if analysis_payload is None:
             return None
 
-        shortlist = self._build_capability_shortlist(analysis_payload)
+        shortlist = self._build_capability_shortlist(analysis_payload=analysis_payload, input_text=input_text)
         selection_payload = self._run_selection_pass(
             input_text=input_text,
             history=history,
@@ -254,8 +254,19 @@ class IntentAdapter:
             original_query=input_text,
         )
 
-    def _build_capability_shortlist(self, analysis_payload: dict[str, Any]) -> list[dict[str, Any]]:
-        candidates: list[tuple[float, str, str]] = []
+    def _build_capability_shortlist(
+        self,
+        *,
+        analysis_payload: dict[str, Any],
+        input_text: str,
+    ) -> list[dict[str, Any]]:
+        candidate_map: dict[tuple[str, str], float] = {}
+
+        def _upsert(domain: str, action: str, confidence: float) -> None:
+            key = (domain, action)
+            prev = candidate_map.get(key, 0.0)
+            candidate_map[key] = max(prev, confidence)
+
         relevant_caps = analysis_payload.get("relevant_capabilities")
         if isinstance(relevant_caps, list):
             for item in relevant_caps:
@@ -269,25 +280,41 @@ class IntentAdapter:
                     confidence = float(item.get("confidence", 0.0))
                 except Exception:
                     confidence = 0.0
-                candidates.append((confidence, domain, action))
+                _upsert(domain, action, confidence)
 
-        if not candidates and self._payload_looks_like_intent(analysis_payload):
+        if not candidate_map and self._payload_looks_like_intent(analysis_payload):
             domain = str(analysis_payload.get("domain", "")).strip()
             action = str(analysis_payload.get("action", "")).strip()
             confidence = float(analysis_payload.get("confidence", 0.0) or 0.0)
             if domain and action:
-                candidates.append((confidence, domain, action))
+                _upsert(domain, action, confidence)
 
-        if not candidates:
+        # Deterministic catalog evidence expansion (metadata-driven).
+        query_norm = self._normalize_text(input_text)
+        query_tokens = self._tokenize_text(input_text)
+        for item in self.capability_catalog:
+            if not isinstance(item, dict):
+                continue
+            domain = str(item.get("domain", "")).strip()
+            action = str(item.get("capability") or item.get("name") or "").strip()
+            if not domain or not action:
+                continue
+            score = self._catalog_entry_intent_score(
+                query_norm=query_norm,
+                query_tokens=query_tokens,
+                item=item,
+            )
+            if score <= 0:
+                continue
+            # Normalize score to confidence-like range while preserving ranking.
+            evidence_confidence = min(0.99, max(0.01, score / 10.0))
+            _upsert(domain, action, evidence_confidence)
+
+        if not candidate_map:
             return []
 
-        seen: set[tuple[str, str]] = set()
         shortlist: list[dict[str, Any]] = []
-        for confidence, domain, action in sorted(candidates, key=lambda item: item[0], reverse=True):
-            key = (domain, action)
-            if key in seen:
-                continue
-            seen.add(key)
+        for (domain, action), confidence in sorted(candidate_map.items(), key=lambda item: item[1], reverse=True):
             entry = self._capability_catalog_entry(domain=domain, capability=action)
             if entry is None:
                 continue
@@ -447,38 +474,11 @@ class IntentAdapter:
                 if not domain or not capability:
                     continue
                 parsed_catalog.append((domain, capability))
-
-                hints: list[str] = []
-                hints.append(capability.replace("_", " "))
-                description = str(item.get("description", "")).strip()
-                if description:
-                    hints.append(description)
-                metadata = self._parse_json_object(item.get("metadata"))
-                domain_description = str(metadata.get("domain_description", "")).strip()
-                if domain_description:
-                    hints.append(domain_description)
-                domain_hints = metadata.get("domain_intent_hints")
-                if isinstance(domain_hints, dict):
-                    for key in ("keywords", "examples"):
-                        values = domain_hints.get(key)
-                        if isinstance(values, list):
-                            for value in values:
-                                hint_text = str(value).strip()
-                                if hint_text:
-                                    hints.append(hint_text)
-                intent_hints = metadata.get("intent_hints") if isinstance(metadata, dict) else None
-                if isinstance(intent_hints, dict):
-                    for key in ("keywords", "examples"):
-                        values = intent_hints.get(key)
-                        if isinstance(values, list):
-                            for value in values:
-                                hint_text = str(value).strip()
-                                if hint_text:
-                                    hints.append(hint_text)
-
-                score = 0.0
-                for hint in hints:
-                    score = max(score, self._hint_match_score(text_norm, text_tokens, hint))
+                score = self._catalog_entry_intent_score(
+                    query_norm=text_norm,
+                    query_tokens=text_tokens,
+                    item=item,
+                )
                 if score <= 0:
                     continue
 
@@ -525,6 +525,58 @@ class IntentAdapter:
         if not overlap:
             return 0.0
         return 2.0 + (len(overlap) / max(1, len(hint_tokens))) * 4.0
+
+    def _hint_values(self, payload: Any) -> list[str]:
+        if not isinstance(payload, dict):
+            return []
+        values: list[str] = []
+        for key in ("keywords", "examples"):
+            raw = payload.get(key)
+            if not isinstance(raw, list):
+                continue
+            for item in raw:
+                text = str(item).strip()
+                if text:
+                    values.append(text)
+        return values
+
+    def _catalog_entry_intent_score(
+        self,
+        *,
+        query_norm: str,
+        query_tokens: set[str],
+        item: dict[str, Any],
+    ) -> float:
+        capability = str(item.get("capability") or item.get("name") or "").strip()
+        description = str(item.get("description", "")).strip()
+        metadata = self._parse_json_object(item.get("metadata"))
+
+        specific_hints: list[str] = []
+        if capability:
+            specific_hints.append(capability.replace("_", " "))
+        if description:
+            specific_hints.append(description)
+        metadata_description = str(metadata.get("description", "")).strip()
+        if metadata_description:
+            specific_hints.append(metadata_description)
+        specific_hints.extend(self._hint_values(metadata.get("intent_hints")))
+
+        domain_hints: list[str] = []
+        domain_description = str(metadata.get("domain_description", "")).strip()
+        if domain_description:
+            domain_hints.append(domain_description)
+        domain_hints.extend(self._hint_values(metadata.get("domain_intent_hints")))
+
+        specific_score = 0.0
+        for hint in specific_hints:
+            specific_score = max(specific_score, self._hint_match_score(query_norm, query_tokens, hint))
+
+        domain_score = 0.0
+        for hint in domain_hints:
+            domain_score = max(domain_score, self._hint_match_score(query_norm, query_tokens, hint))
+
+        # Domain hints are useful to identify area, but must not dominate capability selection.
+        return specific_score + (domain_score * 0.1)
 
     def _parse_json_object(self, raw: Any) -> dict[str, Any]:
         if isinstance(raw, dict):

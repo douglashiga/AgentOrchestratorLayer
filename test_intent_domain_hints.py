@@ -153,3 +153,38 @@ def test_intent_multi_pass_composes_execution_steps_for_next_stage() -> None:
     assert len(steps) == 2
     assert steps[0].get("capability") == "get_stock_price"
     assert steps[1].get("capability") == "send_telegram_message"
+
+
+def test_capability_shortlist_prioritizes_specific_hints_over_domain_hints() -> None:
+    selector = SequenceModelSelector([])
+    adapter = IntentAdapter(
+        model_selector=selector,
+        capability_catalog=[
+            {
+                "domain": "finance",
+                "capability": "get_stock_price",
+                "description": "Get current stock quote.",
+                "metadata": {
+                    "intent_hints": {"keywords": ["qual o valor", "cotacao"]},
+                    "domain_intent_hints": {"keywords": ["bovespa", "ibov"]},
+                },
+            },
+            {
+                "domain": "finance",
+                "capability": "get_top_gainers",
+                "description": "List top gainers in a market.",
+                "metadata": {
+                    "intent_hints": {"keywords": ["maiores ganhos", "maiores altas", "top gainers"]},
+                    "domain_intent_hints": {"keywords": ["bovespa", "ibov"]},
+                },
+            },
+        ],
+    )
+
+    shortlist = adapter._build_capability_shortlist(
+        analysis_payload={"relevant_domains": [{"domain": "finance", "confidence": 0.9}]},
+        input_text="quais os maiores ganhos do bovespa hoje?",
+    )
+    assert isinstance(shortlist, list)
+    assert shortlist
+    assert shortlist[0].get("action") == "get_top_gainers"
