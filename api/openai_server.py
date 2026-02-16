@@ -42,8 +42,6 @@ OPENAI_API_DEBUG_TRACE = os.getenv("OPENAI_API_DEBUG_TRACE", "false").strip().lo
     "yes",
     "on",
 )
-print(f"[DEBUG] OPENAI_API_DEBUG_TRACE env var: {os.getenv('OPENAI_API_DEBUG_TRACE', 'NOT SET')}")
-print(f"[DEBUG] OPENAI_API_DEBUG_TRACE module constant: {OPENAI_API_DEBUG_TRACE}")
 OPENAI_API_INCLUDE_SUGGESTIONS = os.getenv("OPENAI_API_INCLUDE_SUGGESTIONS", "true").strip().lower() in (
     "1",
     "true",
@@ -1166,7 +1164,7 @@ async def _run_agent_turn(
     pending_workflow_by_session: dict[str, dict[str, str]] | None = None,
     pending_clarification_by_session: dict[str, dict[str, Any]] | None = None,
     progress_callback: Any = None,
-) -> tuple[str, str, dict[str, Any], list[dict[str, str]], dict[str, Any]]:
+) -> tuple[str, str, dict[str, Any], list[dict[str, str]], dict[str, Any], Any, Any]:
     pending_map = pending_workflow_by_session if isinstance(pending_workflow_by_session, dict) else {}
     pending_clarification_map = (
         pending_clarification_by_session if isinstance(pending_clarification_by_session, dict) else {}
@@ -1236,7 +1234,7 @@ async def _run_agent_turn(
             "kind": delivery.kind,
             "content": delivery.content,
             "data": delivery.data,
-        }
+        }, None, None  # No plan or intent for resume_task
 
     turn_history = history if history is not None else conversation.get_history(session_id)
     pending_clarification = pending_clarification_map.get(session_id)
@@ -1350,7 +1348,7 @@ async def _run_agent_turn(
         "kind": delivery.kind,
         "content": delivery.content,
         "data": delivery.data,
-    }
+    }, plan, intent
 
 
 async def _run_general_fastpath_turn(
@@ -1360,7 +1358,7 @@ async def _run_general_fastpath_turn(
     conversation: Any,
     engine: Any,
     fastpath: dict[str, Any],
-) -> tuple[str, str, dict[str, Any], list[dict[str, str]], dict[str, Any]]:
+) -> tuple[str, str, dict[str, Any], list[dict[str, str]], dict[str, Any], Any, Any]:
     handler = _resolve_general_handler(engine)
     if handler is None:
         raise RuntimeError("General handler is not available for fast-path mode.")
@@ -1598,6 +1596,12 @@ async def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
                             finish_reason="stop",
                         )
                     )
+                    # Build thinking block for streaming meta chunk
+                    thinking_json = _build_thinking_content(
+                        intent=intent if 'intent' in locals() else None,
+                        plan=plan if 'plan' in locals() else None,
+                        debug_payload=debug_payload,
+                    )
                     yield _sse_line(
                         {
                             "id": completion_id,
@@ -1609,6 +1613,7 @@ async def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
                                 "suggestion_actions": suggestions,
                                 "delivery": delivery,
                                 "debug": debug_payload if OPENAI_API_DEBUG_TRACE else {},
+                                "thinking": thinking_json if OPENAI_API_DEBUG_TRACE else "",
                             },
                         }
                     )
@@ -1810,6 +1815,12 @@ async def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
                             finish_reason="stop",
                         )
                     )
+                    # Build thinking block for streaming meta chunk
+                    thinking_json = _build_thinking_content(
+                        intent=intent if 'intent' in locals() else None,
+                        plan=plan if 'plan' in locals() else None,
+                        debug_payload=debug_payload,
+                    )
                     yield _sse_line(
                         {
                             "id": completion_id,
@@ -1821,6 +1832,7 @@ async def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
                                 "suggestion_actions": suggestions,
                                 "delivery": delivery,
                                 "debug": debug_payload if OPENAI_API_DEBUG_TRACE else {},
+                                "thinking": thinking_json if OPENAI_API_DEBUG_TRACE else "",
                             },
                         }
                     )
@@ -1856,7 +1868,7 @@ async def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
                 reason=fastpath_reason,
                 mode="non_stream",
             )
-            response_text, intent_capability, debug_payload, suggestions, delivery = await _run_general_fastpath_turn(
+            response_text, intent_capability, debug_payload, suggestions, delivery, plan, intent = await _run_general_fastpath_turn(
                 session_id=session_id,
                 user_text=user_text,
                 conversation=conversation,
@@ -1903,6 +1915,14 @@ async def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
         )
     suggestion_texts = _suggestion_texts(suggestions)
 
+    # Build thinking block and format message content
+    thinking_json = _build_thinking_content(
+        intent=intent,
+        plan=plan,
+        debug_payload=debug_payload,
+    )
+    message_content = _format_message_content(response_text, thinking_json)
+
     return {
         "id": completion_id,
         "object": "chat.completion",
@@ -1913,7 +1933,7 @@ async def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": response_text,
+                    "content": message_content,
                     "suggestions": suggestion_texts,
                     "x_suggestions": suggestions,
                     "suggestion_actions": suggestions,
