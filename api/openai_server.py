@@ -13,12 +13,18 @@ import hashlib
 import inspect
 import json
 import os
+import pathlib
 import re
 import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import quote
+
+# Load environment variables from .env BEFORE any other imports that use os.getenv
+from dotenv import load_dotenv
+env_path = pathlib.Path(__file__).parent.parent / ".env"
+load_dotenv(env_path)
 
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
@@ -627,6 +633,51 @@ def _format_response_tail(
     if OPENAI_API_DEBUG_TRACE:
         sections.append(_build_debug_trace(debug_payload))
     return "".join(sections), suggestions
+
+
+def _build_thinking_content(
+    intent: IntentOutput | None = None,
+    plan: ExecutionPlan | None = None,
+    debug_payload: dict[str, Any] | None = None,
+) -> str:
+    """
+    Retorna thinking content em JSON para message.content array.
+    """
+    if not OPENAI_API_DEBUG_TRACE:
+        return ""
+
+    thinking_data = {
+        "intent": {
+            "domain": intent.domain if intent else "unknown",
+            "capability": intent.capability if intent else "unknown",
+            "confidence": float(intent.confidence) if intent else 0.0,
+            "parameters": intent.parameters if intent else {}
+        } if intent else {},
+        "plan": {
+            "execution_mode": plan.execution_mode if plan else "n/a",
+            "steps": len(plan.steps) if plan else 0
+        } if plan else {},
+        "execution": debug_payload.get("output", {}) if debug_payload else {}
+    }
+
+    return json.dumps(thinking_data, ensure_ascii=False, indent=2)
+
+
+def _format_message_content(
+    response_text: str,
+    thinking_json: str | None = None,
+) -> str | list[dict[str, str]]:
+    """
+    Formata content como array [thinking, text] ou string simples.
+    Compatível com OpenAI Chat Completions spec.
+    """
+    if not thinking_json or not OPENAI_API_DEBUG_TRACE:
+        return response_text
+
+    return [
+        {"type": "thinking", "text": thinking_json},
+        {"type": "text", "text": response_text}
+    ]
 
 
 def _sse_line(payload: dict[str, Any]) -> str:
@@ -1337,7 +1388,7 @@ async def _run_general_fastpath_turn(
         "kind": delivery.kind,
         "content": delivery.content,
         "data": delivery.data,
-    }
+    }, None, None  # No plan or intent for fastpath_turn
 
 
 @asynccontextmanager
@@ -1583,7 +1634,7 @@ async def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
                                     delta={"content": "↩️ Fast-path indisponível, usando pipeline completo...\n"},
                                 )
                             )
-                        response_text, _cap, debug_payload, suggestions, delivery = await _run_agent_turn(
+                        response_text, _cap, debug_payload, suggestions, delivery, plan, intent = await _run_agent_turn(
                             session_id=session_id,
                             user_text=user_text,
                             conversation=conversation,
@@ -1702,9 +1753,9 @@ async def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
                             )
                             await asyncio.sleep(0)
 
-                        response_text, _cap, debug_payload, suggestions, delivery = await run_task
+                        response_text, _cap, debug_payload, suggestions, delivery, plan, intent = await run_task
                     else:
-                        response_text, _cap, debug_payload, suggestions, delivery = await _run_agent_turn(
+                        response_text, _cap, debug_payload, suggestions, delivery, plan, intent = await _run_agent_turn(
                             session_id=session_id,
                             user_text=user_text,
                             conversation=conversation,
@@ -1805,7 +1856,7 @@ async def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
                 fastpath=fastpath,
             )
         except Exception as e:
-            response_text, intent_capability, debug_payload, suggestions, delivery = await _run_agent_turn(
+            response_text, intent_capability, debug_payload, suggestions, delivery, plan, intent = await _run_agent_turn(
                 session_id=session_id,
                 user_text=user_text,
                 conversation=conversation,
@@ -1824,7 +1875,7 @@ async def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
                 mode="pipeline",
             )
     else:
-        response_text, intent_capability, debug_payload, suggestions, delivery = await _run_agent_turn(
+        response_text, intent_capability, debug_payload, suggestions, delivery, plan, intent = await _run_agent_turn(
             session_id=session_id,
             user_text=user_text,
             conversation=conversation,
