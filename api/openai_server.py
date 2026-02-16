@@ -8,23 +8,23 @@ Implements minimal endpoints required by Open WebUI:
 
 from __future__ import annotations
 
+# Load environment variables from .env at the very start
+import pathlib
+from dotenv import load_dotenv
+env_path = pathlib.Path(__file__).parent.parent / ".env"
+load_dotenv(env_path, override=True)
+
 import asyncio
 import hashlib
 import inspect
 import json
 import os
-import pathlib
 import re
 import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import quote
-
-# Load environment variables from .env BEFORE any other imports that use os.getenv
-from dotenv import load_dotenv
-env_path = pathlib.Path(__file__).parent.parent / ".env"
-load_dotenv(env_path)
 
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
@@ -42,6 +42,8 @@ OPENAI_API_DEBUG_TRACE = os.getenv("OPENAI_API_DEBUG_TRACE", "false").strip().lo
     "yes",
     "on",
 )
+print(f"[DEBUG] OPENAI_API_DEBUG_TRACE env var: {os.getenv('OPENAI_API_DEBUG_TRACE', 'NOT SET')}")
+print(f"[DEBUG] OPENAI_API_DEBUG_TRACE module constant: {OPENAI_API_DEBUG_TRACE}")
 OPENAI_API_INCLUDE_SUGGESTIONS = os.getenv("OPENAI_API_INCLUDE_SUGGESTIONS", "true").strip().lower() in (
     "1",
     "true",
@@ -643,7 +645,10 @@ def _build_thinking_content(
     """
     Retorna thinking content em JSON para message.content array.
     """
-    if not OPENAI_API_DEBUG_TRACE:
+    # Check DEBUG_TRACE at runtime from os.getenv (not module-level constant)
+    debug_trace_enabled = os.getenv("OPENAI_API_DEBUG_TRACE", "false").strip().lower() in ("1", "true", "yes", "on")
+
+    if not debug_trace_enabled:
         return ""
 
     thinking_data = {
@@ -671,7 +676,10 @@ def _format_message_content(
     Formata content como array [thinking, text] ou string simples.
     Compatível com OpenAI Chat Completions spec.
     """
-    if not thinking_json or not OPENAI_API_DEBUG_TRACE:
+    # Check DEBUG_TRACE at runtime from os.getenv (not module-level constant)
+    debug_trace_enabled = os.getenv("OPENAI_API_DEBUG_TRACE", "false").strip().lower() in ("1", "true", "yes", "on")
+
+    if not thinking_json or not debug_trace_enabled:
         return response_text
 
     return [
