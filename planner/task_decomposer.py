@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from shared.models import ExecutionPlan, ExecutionStep, IntentOutput
+from shared.models import ExecutionIntent, ExecutionPlan, ExecutionStep, IntentOutput
 from shared.safe_eval import safe_eval_bool
 
 
@@ -24,7 +24,7 @@ class TaskDecomposer:
     def update_capability_catalog(self, capability_catalog: list[dict[str, Any]]) -> None:
         self.capability_catalog = capability_catalog or []
 
-    def decompose(self, intent: IntentOutput) -> ExecutionPlan:
+    def decompose(self, intent: IntentOutput | ExecutionIntent) -> ExecutionPlan:
         """Decompose intent into 1..N execution steps."""
         hinted_plan = self._plan_from_execution_steps_hint(intent)
         if hinted_plan is not None:
@@ -90,7 +90,7 @@ class TaskDecomposer:
         self,
         *,
         base_plan: ExecutionPlan,
-        intent: IntentOutput,
+        intent: IntentOutput | ExecutionIntent,
         source_meta: dict[str, Any],
     ) -> ExecutionPlan:
         composition_cfg = source_meta.get("composition")
@@ -132,7 +132,7 @@ class TaskDecomposer:
             steps=[*base_plan.steps, followup_step],
         )
 
-    def _build_primary_step(self, intent: IntentOutput) -> ExecutionStep:
+    def _build_primary_step(self, intent: IntentOutput | ExecutionIntent) -> ExecutionStep:
         params = self._runtime_parameters(intent.parameters)
         if not params.get("symbol"):
             symbols = params.get("symbols")
@@ -166,7 +166,7 @@ class TaskDecomposer:
             steps=[primary_step],
         )
 
-    def _plan_from_execution_steps_hint(self, intent: IntentOutput) -> ExecutionPlan | None:
+    def _plan_from_execution_steps_hint(self, intent: IntentOutput | ExecutionIntent) -> ExecutionPlan | None:
         params = intent.parameters if isinstance(intent.parameters, dict) else {}
         raw_steps = params.get("_execution_steps")
         if not isinstance(raw_steps, list) or not raw_steps:
@@ -241,7 +241,7 @@ class TaskDecomposer:
                 return {}
         return metadata if isinstance(metadata, dict) else {}
 
-    def _composition_enabled(self, intent: IntentOutput, composition_cfg: dict[str, Any]) -> bool:
+    def _composition_enabled(self, intent: IntentOutput | ExecutionIntent, composition_cfg: dict[str, Any]) -> bool:
         enabled_if = composition_cfg.get("enabled_if")
         if enabled_if is None:
             return True
@@ -304,7 +304,7 @@ class TaskDecomposer:
                 workflow = None
         return isinstance(workflow, dict)
 
-    def _build_multi_symbol_price_plan(self, intent: IntentOutput) -> ExecutionPlan | None:
+    def _build_multi_symbol_price_plan(self, intent: IntentOutput | ExecutionIntent) -> ExecutionPlan | None:
         if intent.capability != "get_stock_price":
             return None
         symbols = self._symbols_from_params(intent.parameters)
@@ -341,7 +341,7 @@ class TaskDecomposer:
 
     def _build_array_decomposition_plan(
         self,
-        intent: IntentOutput,
+        intent: IntentOutput | ExecutionIntent,
         source_meta: dict[str, Any],
     ) -> ExecutionPlan | None:
         """
@@ -473,7 +473,7 @@ class TaskDecomposer:
 
     def _build_followup_step(
         self,
-        intent: IntentOutput,
+        intent: IntentOutput | ExecutionIntent,
         followup_entry: dict[str, Any],
         source_config: dict[str, Any],
     ) -> ExecutionStep | None:

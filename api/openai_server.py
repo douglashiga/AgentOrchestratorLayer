@@ -33,7 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from main import build_pipeline, _normalize_intent_parameters
 from shared.delivery_layer import build_delivery_payload
-from shared.models import IntentOutput
+from shared.models import ExecutionIntent, IntentOutput
 from shared.workflow_contracts import ClarificationAnswer
 
 OPENAI_API_DEBUG_TRACE = os.getenv("OPENAI_API_DEBUG_TRACE", "false").strip().lower() in (
@@ -465,7 +465,7 @@ def _should_store_pending_clarification(output: Any) -> bool:
     return extracted is not None
 
 
-def _build_pending_clarification_entry(intent: IntentOutput, output: Any) -> dict[str, Any]:
+def _build_pending_clarification_entry(intent: IntentOutput | ExecutionIntent, output: Any) -> dict[str, Any]:
     extracted = _extract_clarification_payload(output)
     if extracted is None:
         metadata = getattr(output, "metadata", {})
@@ -484,16 +484,27 @@ def _build_pending_clarification_entry(intent: IntentOutput, output: Any) -> dic
     }
 
 
-def _resolve_pending_clarification_intent(pending_entry: dict[str, Any], user_text: str) -> IntentOutput | None:
+def _resolve_pending_clarification_intent(pending_entry: dict[str, Any], user_text: str) -> ExecutionIntent | None:
     if _is_decline_message(user_text):
         return None
 
     payload = pending_entry.get("intent")
     if not isinstance(payload, dict):
         return None
+
+    # Reconstruct the stored intent — try ExecutionIntent first (has domain/capability/parameters),
+    # then IntentOutput (has primary_domain/goal/entities) as fallback
+    original_intent: ExecutionIntent | None = None
     try:
-        original_intent = IntentOutput(**payload)
+        original_intent = ExecutionIntent(**payload)
     except Exception:
+        try:
+            intent_output = IntentOutput(**payload)
+            original_intent = intent_output.to_execution_intent(resolved_capability=intent_output.goal.lower())
+        except Exception:
+            return None
+
+    if original_intent is None:
         return None
 
     updated_params = dict(original_intent.parameters or {})
@@ -523,7 +534,7 @@ def _resolve_pending_clarification_intent(pending_entry: dict[str, Any], user_te
     if not applied:
         return None
 
-    return IntentOutput(
+    return ExecutionIntent(
         domain=original_intent.domain,
         capability=original_intent.capability,
         confidence=1.0,
@@ -1258,8 +1269,10 @@ async def _run_agent_turn(
         else:
             pending_clarification_map.pop(session_id, None)
 
+    intent_output: IntentOutput | None = None
     if not resumed_from_clarification:
-        intent = intent_adapter.extract(user_text, turn_history, session_id=session_id)
+        intent_output = intent_adapter.extract(user_text, turn_history, session_id=session_id)
+        intent = planner.resolve_intent(intent_output)
     intent_extracted = intent.model_dump(mode="json")
     await _emit_progress_event(
         progress_callback,
@@ -1287,7 +1300,8 @@ async def _run_agent_turn(
             },
         },
     )
-    plan = planner.generate_plan(intent, session_id=session_id)
+    plan_input = intent_output if intent_output is not None else intent
+    plan = planner.generate_plan(plan_input, session_id=session_id)
     plan_dump = plan.model_dump(mode="json")
     await _emit_progress_event(
         progress_callback,
@@ -1363,7 +1377,7 @@ async def _run_general_fastpath_turn(
     if handler is None:
         raise RuntimeError("General handler is not available for fast-path mode.")
 
-    intent = IntentOutput(
+    intent = ExecutionIntent(
         domain="general",
         capability="chat",
         confidence=1.0,

@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 
-from shared.models import IntentOutput, DomainOutput
+from shared.models import ExecutionIntent, IntentOutput, DomainOutput
 from domains.finance.handler import FinanceDomainHandler
 from domains.finance.symbol_resolver import SymbolResolver
 from domains.finance.config import MARKET_ALIASES as CONFIG_MARKET_ALIASES
@@ -962,14 +962,367 @@ def get_manifest():
                 "historico de cotacao da vale3 em 1 ano",
             ],
         },
+        "goals": [
+            {
+                "goal": "GET_QUOTE",
+                "description": "Get current stock price/quote for one or more symbols",
+                "capabilities": ["get_stock_price"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "qual o preco", "qual o preço", "qual o valor",
+                        "cotacao", "cotação", "quanto esta", "quanto está",
+                        "ticker", "stock price", "price of",
+                    ],
+                    "examples": [
+                        "qual o valor da petr4?",
+                        "quanto esta a vale3 hoje?",
+                        "price of aapl",
+                    ],
+                },
+                "entities_schema": {
+                    "symbol_text": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Stock symbol or company name as mentioned by user (e.g. 'Nordea', 'PETR4', 'Apple')",
+                    },
+                    "symbols_text": {
+                        "type": "array",
+                        "description": "Multiple stock symbols/company names if comparing (e.g. ['Vale', 'Petrobras'])",
+                    },
+                },
+            },
+            {
+                "goal": "VIEW_HISTORY",
+                "description": "Get historical OHLC price data for a symbol and period",
+                "capabilities": ["get_historical_data"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "historico", "histórico", "grafico", "gráfico",
+                        "serie historica", "dados historicos", "preco nos ultimos",
+                    ],
+                    "examples": [
+                        "historico da petr4 no ultimo mes",
+                        "grafico de vale3 em 1 ano",
+                    ],
+                },
+                "entities_schema": {
+                    "symbol_text": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Stock symbol or company name as mentioned by user",
+                    },
+                    "period_text": {
+                        "type": "string",
+                        "description": "Time period as mentioned by user (e.g. 'ultimo mes', '1 ano', 'ytd')",
+                    },
+                    "interval_text": {
+                        "type": "string",
+                        "description": "Data interval as mentioned by user (e.g. 'diário', 'semanal')",
+                    },
+                },
+            },
+            {
+                "goal": "SCREEN_STOCKS",
+                "description": "Screen or filter stocks by market criteria",
+                "capabilities": ["get_stock_screener"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "screener", "filtrar acoes", "filtrar ações",
+                        "ranking de acoes", "acoes por setor",
+                    ],
+                    "examples": [
+                        "screener de acoes no brasil",
+                        "melhores acoes de tecnologia nos eua",
+                    ],
+                },
+                "entities_schema": {
+                    "market_text": {
+                        "type": "string",
+                        "description": "Market name as mentioned by user (e.g. 'brasil', 'eua', 'suécia')",
+                    },
+                    "sector_text": {
+                        "type": "string",
+                        "description": "Sector as mentioned by user (e.g. 'tecnologia', 'financeiro')",
+                    },
+                },
+            },
+            {
+                "goal": "TOP_MOVERS",
+                "description": "Find top gaining or losing stocks for a market/period",
+                "capabilities": ["get_top_gainers", "get_top_losers"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "maiores altas", "maiores baixas", "maiores ganhos", "maiores perdas",
+                        "top gainers", "top losers",
+                        "acoes que mais subiram", "ações que mais subiram",
+                        "acoes que mais cairam", "ações que mais caíram",
+                        "mais altas hoje", "mais baixas hoje",
+                        "ranking de altas", "ranking de baixas",
+                    ],
+                    "examples": [
+                        "quais as maiores altas de hoje do bovespa?",
+                        "top losers no brasil hoje",
+                        "quais as maiores baixas de hoje?",
+                    ],
+                },
+                "entities_schema": {
+                    "direction": {
+                        "type": "enum",
+                        "values": ["GAINERS", "LOSERS", "BOTH"],
+                        "required": True,
+                        "default": "BOTH",
+                        "description": "Whether to show top gainers, losers, or both",
+                        "capability_map": {
+                            "GAINERS": "get_top_gainers",
+                            "LOSERS": "get_top_losers",
+                            "BOTH": ["get_top_gainers", "get_top_losers"],
+                        },
+                    },
+                    "market_text": {
+                        "type": "string",
+                        "description": "Market name as mentioned by user (e.g. 'bovespa', 'brasil', 'suécia')",
+                    },
+                    "period_text": {
+                        "type": "string",
+                        "description": "Time period as mentioned by user (e.g. 'hoje', 'semana', 'mês')",
+                    },
+                },
+            },
+            {
+                "goal": "DIVIDEND_ANALYSIS",
+                "description": "Find high dividend yield stocks or dividend history for a symbol",
+                "capabilities": ["get_top_dividend_payers", "get_dividends"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "dividendos", "dividend yield", "maiores dividendos",
+                        "acoes pagadoras", "ações pagadoras",
+                        "historico de dividendos", "dividendos da",
+                    ],
+                    "examples": [
+                        "quais acoes pagam mais dividendos no brasil?",
+                        "dividendos da petr4",
+                    ],
+                },
+                "entities_schema": {
+                    "focus": {
+                        "type": "enum",
+                        "values": ["RANKING", "HISTORY"],
+                        "required": True,
+                        "default": "RANKING",
+                        "description": "RANKING for top payers by market, HISTORY for a specific symbol's dividend history",
+                        "capability_map": {
+                            "RANKING": "get_top_dividend_payers",
+                            "HISTORY": "get_dividends",
+                        },
+                    },
+                    "symbol_text": {
+                        "type": "string",
+                        "description": "Company name or ticker as mentioned by user",
+                    },
+                    "market_text": {
+                        "type": "string",
+                        "description": "Market name as mentioned by user",
+                    },
+                },
+            },
+            {
+                "goal": "TECHNICAL_SCAN",
+                "description": "Find stocks with technical signals (RSI, MACD) by market",
+                "capabilities": ["get_technical_signals"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "sinal tecnico", "sinal técnico", "rsi", "macd",
+                        "sobrevendido", "sobrecomprado",
+                    ],
+                    "examples": [
+                        "acoes com rsi sobrevendido no brasil",
+                        "sinais macd no mercado americano",
+                    ],
+                },
+            },
+            {
+                "goal": "COMPARE_STOCKS",
+                "description": "Compare fundamental metrics of multiple stocks",
+                "capabilities": ["compare_fundamentals"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "compare fundamentos", "comparar fundamentos",
+                        "comparar acoes", "comparar ações", "valuation comparativo",
+                    ],
+                    "examples": [
+                        "compare os fundamentos de vale3 e petr4",
+                        "comparar aapl e msft por pe ratio e roe",
+                    ],
+                },
+            },
+            {
+                "goal": "FUNDAMENTALS",
+                "description": "Get fundamental data for a specific stock",
+                "capabilities": ["get_fundamentals"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "fundamentos", "fundamental", "valuation",
+                        "balanco da empresa", "balanço",
+                    ],
+                    "examples": [
+                        "fundamentos da vale3",
+                        "valuation da petr4",
+                    ],
+                },
+            },
+            {
+                "goal": "COMPANY_PROFILE",
+                "description": "Get company profile and business information",
+                "capabilities": ["get_company_info"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "sobre a empresa", "company info", "setor da empresa",
+                        "perfil da empresa",
+                    ],
+                    "examples": [
+                        "me fale sobre a empresa vale3",
+                        "company info da aapl",
+                    ],
+                },
+            },
+            {
+                "goal": "FINANCIAL_STATEMENTS",
+                "description": "Get financial statements (DRE, balance sheet)",
+                "capabilities": ["get_financial_statements"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "demonstracoes financeiras", "financial statements",
+                        "dre", "balanco patrimonial",
+                    ],
+                    "examples": [
+                        "demonstracoes financeiras da vale3",
+                        "financial statements de msft",
+                    ],
+                },
+            },
+            {
+                "goal": "OPTIONS_DATA",
+                "description": "Get option chain or Greeks for a stock",
+                "capabilities": ["get_option_chain", "get_option_greeks"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "option chain", "cadeia de opcoes", "opcoes da acao",
+                        "opções da ação", "greeks", "delta gamma",
+                        "gregas das opcoes", "gregas das opções",
+                    ],
+                    "examples": [
+                        "option chain da aapl",
+                        "gregas das opcoes de petr4",
+                    ],
+                },
+                "entities_schema": {
+                    "focus": {
+                        "type": "enum",
+                        "values": ["CHAIN", "GREEKS"],
+                        "required": True,
+                        "default": "CHAIN",
+                        "description": "CHAIN for option chain, GREEKS for option Greeks (delta, gamma, etc.)",
+                        "capability_map": {
+                            "CHAIN": "get_option_chain",
+                            "GREEKS": "get_option_greeks",
+                        },
+                    },
+                    "symbol_text": {
+                        "type": "string",
+                        "description": "Company name or ticker as mentioned by user",
+                    },
+                },
+            },
+            {
+                "goal": "ACCOUNT_OVERVIEW",
+                "description": "Get brokerage account summary",
+                "capabilities": ["get_account_summary"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "resumo da conta", "account summary", "saldo da conta",
+                    ],
+                    "examples": [
+                        "meu account summary",
+                    ],
+                },
+            },
+            {
+                "goal": "SEARCH_SYMBOL",
+                "description": "Search ticker symbols by company name",
+                "capabilities": ["search_symbol", "yahoo_search"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "qual o ticker", "procurar ticker", "buscar simbolo",
+                        "buscar símbolo",
+                    ],
+                    "examples": [
+                        "qual o ticker da petrobras?",
+                        "buscar simbolo da nordea",
+                    ],
+                },
+                "entities_schema": {
+                    "query_text": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Company name or keyword to search for (e.g. 'nordea', 'petrobras')",
+                    },
+                },
+            },
+            {
+                "goal": "PIPELINE_STATUS",
+                "description": "Check data pipeline jobs and status",
+                "capabilities": ["list_jobs", "get_job_status"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "listar jobs", "jobs disponiveis", "jobs disponíveis",
+                        "pipeline jobs", "status do job", "job status",
+                    ],
+                    "examples": [
+                        "quais jobs de dados estao disponiveis?",
+                        "qual o status do job earnings_sync?",
+                    ],
+                },
+                "entities_schema": {
+                    "focus": {
+                        "type": "enum",
+                        "values": ["LIST", "STATUS"],
+                        "required": True,
+                        "default": "LIST",
+                        "description": "LIST to enumerate available jobs, STATUS for a specific job's health",
+                        "capability_map": {
+                            "LIST": "list_jobs",
+                            "STATUS": "get_job_status",
+                        },
+                    },
+                    "job_name_text": {
+                        "type": "string",
+                        "description": "Job name as mentioned by user (e.g. 'earnings_sync')",
+                    },
+                },
+            },
+        ],
         "capabilities": capabilities
     }
 
 @app.post("/execute", response_model=DomainOutput)
-async def execute_intent(intent: IntentOutput):
+async def execute_intent(intent: ExecutionIntent):
     """
     Standard Domain Protocol Execution Endpoint.
-    Receives IntentOutput -> Returns DomainOutput.
+    Receives ExecutionIntent -> Returns DomainOutput.
     """
     if not handler:
         raise HTTPException(status_code=503, detail="Handler not initialized")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from main import ORCHESTRATOR_CONFIDENCE_THRESHOLD, _normalize_intent_parameters
 from registry.domain_registry import HandlerRegistry
-from shared.models import IntentOutput
+from shared.models import ExecutionIntent
 
 
 def _registry_with_stock_price() -> HandlerRegistry:
@@ -70,7 +70,7 @@ def _registry_with_stock_price() -> HandlerRegistry:
 
 def test_normalize_routes_general_chat_price_query_to_finance() -> None:
     registry = _registry_with_stock_price()
-    raw = IntentOutput(
+    raw = ExecutionIntent(
         domain="general",
         capability="chat",
         confidence=0.4,
@@ -89,7 +89,7 @@ def test_normalize_routes_general_chat_price_query_to_finance() -> None:
 
 def test_normalize_keeps_general_chat_for_non_finance_message() -> None:
     registry = _registry_with_stock_price()
-    raw = IntentOutput(
+    raw = ExecutionIntent(
         domain="general",
         capability="chat",
         confidence=0.8,
@@ -104,7 +104,7 @@ def test_normalize_keeps_general_chat_for_non_finance_message() -> None:
 
 def test_normalize_carries_notify_flag_when_routing_to_finance() -> None:
     registry = _registry_with_stock_price()
-    raw = IntentOutput(
+    raw = ExecutionIntent(
         domain="general",
         capability="chat",
         confidence=0.5,
@@ -132,7 +132,7 @@ def test_normalize_does_not_reroute_without_method_intent_hints() -> None:
             "parameter_specs": {"symbol": {"type": "string", "required": True}},
         },
     )
-    raw = IntentOutput(
+    raw = ExecutionIntent(
         domain="general",
         capability="chat",
         confidence=0.5,
@@ -147,7 +147,7 @@ def test_normalize_does_not_reroute_without_method_intent_hints() -> None:
 
 def test_normalize_routes_plain_company_token_to_price_capability() -> None:
     registry = _registry_with_stock_price()
-    raw = IntentOutput(
+    raw = ExecutionIntent(
         domain="general",
         capability="chat",
         confidence=0.4,
@@ -204,7 +204,7 @@ def test_normalize_routes_bovespa_gainers_query_to_top_gainers() -> None:
         },
     )
 
-    raw = IntentOutput(
+    raw = ExecutionIntent(
         domain="general",
         capability="chat",
         confidence=0.3,
@@ -221,7 +221,7 @@ def test_normalize_routes_bovespa_gainers_query_to_top_gainers() -> None:
 
 def test_normalize_canonicalizes_domain_from_registered_capability_metadata() -> None:
     registry = _registry_with_stock_price()
-    raw = IntentOutput(
+    raw = ExecutionIntent(
         domain="general",
         capability="get_stock_price",
         confidence=0.9,
@@ -251,7 +251,7 @@ def test_normalize_parameter_alias_matching_is_accent_insensitive() -> None:
             },
         },
     )
-    raw = IntentOutput(
+    raw = ExecutionIntent(
         domain="finance",
         capability="get_top_gainers",
         confidence=0.8,
@@ -265,7 +265,7 @@ def test_normalize_parameter_alias_matching_is_accent_insensitive() -> None:
 
 def test_normalize_boosts_confidence_for_registered_capability_with_required_params() -> None:
     registry = _registry_with_stock_price()
-    raw = IntentOutput(
+    raw = ExecutionIntent(
         domain="finance",
         capability="get_stock_price",
         confidence=0.15,
@@ -281,7 +281,7 @@ def test_normalize_boosts_confidence_for_registered_capability_with_required_par
 
 def test_normalize_does_not_boost_confidence_when_required_params_are_missing() -> None:
     registry = _registry_with_stock_price()
-    raw = IntentOutput(
+    raw = ExecutionIntent(
         domain="finance",
         capability="get_stock_price",
         confidence=0.2,
@@ -295,7 +295,7 @@ def test_normalize_does_not_boost_confidence_when_required_params_are_missing() 
 
 def test_normalize_boosts_confidence_when_flow_can_resolve_required_params() -> None:
     registry = _registry_with_stock_price()
-    raw = IntentOutput(
+    raw = ExecutionIntent(
         domain="finance",
         capability="get_stock_price",
         confidence=0.46,

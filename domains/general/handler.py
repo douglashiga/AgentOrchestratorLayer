@@ -14,7 +14,7 @@ from collections import defaultdict
 from typing import Any, Callable
 
 from models.selector import ModelSelector
-from shared.models import Decision, DomainOutput, IntentOutput, ModelPolicy
+from shared.models import Decision, DomainOutput, ExecutionIntent, IntentOutput, ModelPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class GeneralDomainHandler:
             json_mode=False, # Chat returns text, not JSON
         )
 
-    async def execute(self, intent: IntentOutput) -> DomainOutput:
+    async def execute(self, intent: IntentOutput | ExecutionIntent) -> DomainOutput:
         """Generate a conversational response."""
         if intent.capability == "list_capabilities":
             response_text = self._build_capability_listing()

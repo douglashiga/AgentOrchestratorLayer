@@ -3,16 +3,16 @@ import asyncio
 from execution.engine import ExecutionEngine
 from execution.task_state_store import TaskStateStore
 from registry.domain_registry import HandlerRegistry
-from shared.models import DomainOutput, IntentOutput
+from shared.models import DomainOutput, ExecutionIntent
 from shared.workflow_contracts import ClarificationAnswer, MethodSpec
 
 
 class _DummyOrchestrator:
     def __init__(self) -> None:
         self.domain_registry = HandlerRegistry()
-        self.calls: list[IntentOutput] = []
+        self.calls: list[ExecutionIntent] = []
 
-    async def process(self, intent: IntentOutput) -> DomainOutput:
+    async def process(self, intent: ExecutionIntent) -> DomainOutput:
         self.calls.append(intent)
         symbol = str(intent.parameters.get("symbol", "")).strip()
         return DomainOutput(
@@ -74,7 +74,7 @@ def test_workflow_runtime_pause_and_resume(tmp_path) -> None:
             },
         )
 
-        intent = IntentOutput(
+        intent = ExecutionIntent(
             domain="finance",
             capability="get_stock_price",
             confidence=1.0,

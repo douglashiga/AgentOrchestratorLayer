@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from domains.general.handler import GeneralDomainHandler
-from shared.models import IntentOutput
+from shared.models import ExecutionIntent
 
 
 class FailingModelSelector:
@@ -11,7 +11,7 @@ class FailingModelSelector:
 
 def test_general_handler_returns_fallback_text_on_model_error():
     handler = GeneralDomainHandler(model_selector=FailingModelSelector())
-    intent = IntentOutput(
+    intent = ExecutionIntent(
         domain="general",
         capability="chat",
         confidence=1.0,

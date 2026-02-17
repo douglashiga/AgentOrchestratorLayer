@@ -16,7 +16,7 @@ import os
 from typing import Any
 
 from models.selector import ModelSelector
-from shared.models import ExecutionPlan, ExecutionStep, IntentOutput, ModelPolicy
+from shared.models import ExecutionIntent, ExecutionPlan, ExecutionStep, IntentOutput, ModelPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ class FunctionCallingPlanner:
 
     def expand_plan(
         self,
-        intent: IntentOutput,
+        intent: IntentOutput | ExecutionIntent,
         base_plan: ExecutionPlan,
         memory_context: dict[str, Any] | None = None,
     ) -> ExecutionPlan:
@@ -118,7 +118,7 @@ class FunctionCallingPlanner:
 
     def _required_fallback_step(
         self,
-        intent: IntentOutput,
+        intent: IntentOutput | ExecutionIntent,
         current_steps: list[ExecutionStep],
     ) -> ExecutionStep | None:
         candidates = []
@@ -162,7 +162,7 @@ class FunctionCallingPlanner:
             output_key=f"step_{next_id}",
         )
 
-    def _should_run(self, intent: IntentOutput, base_plan: ExecutionPlan) -> bool:
+    def _should_run(self, intent: IntentOutput | ExecutionIntent, base_plan: ExecutionPlan) -> bool:
         if not self.enabled:
             return False
         if self.mode == "none":
@@ -188,7 +188,7 @@ class FunctionCallingPlanner:
 
     def _propose_next_step(
         self,
-        intent: IntentOutput,
+        intent: IntentOutput | ExecutionIntent,
         current_steps: list[ExecutionStep],
         combine_mode: str,
         memory_context: dict[str, Any] | None = None,
@@ -217,7 +217,7 @@ class FunctionCallingPlanner:
 
     def _build_messages(
         self,
-        intent: IntentOutput,
+        intent: IntentOutput | ExecutionIntent,
         current_steps: list[ExecutionStep],
         combine_mode: str,
         candidates: list[dict[str, Any]],
@@ -268,7 +268,7 @@ class FunctionCallingPlanner:
         self,
         proposal: dict[str, Any],
         current_steps: list[ExecutionStep],
-        intent: IntentOutput,
+        intent: IntentOutput | ExecutionIntent,
     ) -> ExecutionStep | None:
         step_obj = proposal.get("step")
         if not isinstance(step_obj, dict):
@@ -364,7 +364,7 @@ class FunctionCallingPlanner:
                 return entry
         return None
 
-    def _is_step_allowed_by_intent(self, intent: IntentOutput, catalog_entry: dict[str, Any]) -> bool:
+    def _is_step_allowed_by_intent(self, intent: IntentOutput | ExecutionIntent, catalog_entry: dict[str, Any]) -> bool:
         """
         Deterministic guardrail:
         notifier follow-up steps are allowed only with explicit notify=true.

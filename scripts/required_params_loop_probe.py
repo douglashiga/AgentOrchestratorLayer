@@ -22,7 +22,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from main import build_pipeline
-from shared.models import IntentOutput
+from shared.models import ExecutionIntent
 
 
 def _to_dict(value: Any) -> dict[str, Any]:
@@ -219,7 +219,7 @@ async def _run(args: argparse.Namespace) -> int:
     try:
         for idx, params in enumerate(stages, start=1):
             stage_params = dict(params)
-            intent = IntentOutput(
+            intent = ExecutionIntent(
                 domain=args.domain,
                 capability=args.capability,
                 confidence=1.0,

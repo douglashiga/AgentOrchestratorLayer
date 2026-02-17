@@ -2,7 +2,8 @@
 Planner Layer — Decomposes Intent into an Execution Plan.
 
 Responsibility:
-- Transform IntentOutput → ExecutionPlan (1..N steps)
+- Transform IntentOutput → ExecutionIntent → ExecutionPlan (1..N steps)
+- GoalResolver: deterministic goal → capability resolution
 - Support metadata-driven multi-domain decomposition
 - Inject deterministic structured memory before planning
 """
@@ -14,8 +15,9 @@ from typing import Any
 
 from memory.store import MemoryStore
 from models.selector import ModelSelector
-from shared.models import IntentOutput, ExecutionPlan
+from shared.models import ExecutionIntent, IntentOutput, ExecutionPlan
 from planner.function_calling_planner import FunctionCallingPlanner
+from planner.goal_resolver import GoalResolver
 from planner.task_decomposer import TaskDecomposer
 
 logger = logging.getLogger(__name__)
@@ -29,8 +31,10 @@ class PlannerService:
         capability_catalog: list[dict[str, Any]] | None = None,
         model_selector: ModelSelector | None = None,
         memory_store: MemoryStore | None = None,
+        goal_catalog_dict: dict[str, dict[str, Any]] | None = None,
     ):
         self.capability_catalog = capability_catalog or []
+        self.goal_resolver = GoalResolver(goal_catalog_dict=goal_catalog_dict)
         self.task_decomposer = TaskDecomposer(capability_catalog=capability_catalog or [])
         self.function_planner = FunctionCallingPlanner(
             model_selector=model_selector,
@@ -38,6 +42,7 @@ class PlannerService:
         )
         self.memory_store = memory_store
         self.last_memory_context: dict[str, Any] = {"enabled": False}
+        self.last_execution_intent: ExecutionIntent | None = None
         self.memory_enabled = os.getenv("PLANNER_MEMORY_ENABLED", "true").strip().lower() in (
             "1",
             "true",
@@ -57,20 +62,61 @@ class PlannerService:
         self.task_decomposer.update_capability_catalog(capability_catalog)
         self.function_planner.update_capability_catalog(capability_catalog)
 
-    def generate_plan(self, intent: IntentOutput, session_id: str | None = None) -> ExecutionPlan:
+    def update_goal_catalog(self, goal_catalog_dict: dict[str, dict[str, Any]]) -> None:
+        """Update the goal resolver with fresh goal definitions."""
+        self.goal_resolver.update_goals(goal_catalog_dict)
+
+    def resolve_intent(self, intent: IntentOutput) -> ExecutionIntent:
+        """Resolve a goal-based IntentOutput into a capability-based ExecutionIntent.
+
+        This is the bridge between the Intent Layer (goals) and the Execution Layer (capabilities).
+        """
+        return self.goal_resolver.resolve(intent)
+
+    def generate_plan(
+        self,
+        intent: IntentOutput | ExecutionIntent,
+        session_id: str | None = None,
+    ) -> ExecutionPlan:
         """
         Convert an intent into an actionable execution plan.
+
+        Accepts either:
+        - IntentOutput (goal-based) → resolves goal → capability first
+        - ExecutionIntent (already resolved) → skips goal resolution
+
+        Flow: IntentOutput → GoalResolver → ExecutionIntent → TaskDecomposer → ExecutionPlan
         """
-        logger.info("Generating plan for intent: %s", intent.capability)
-        enriched_intent, memory_context = self._inject_memory(intent, session_id=session_id)
+        # Step 1: Resolve goal → capability (if needed)
+        if isinstance(intent, ExecutionIntent):
+            execution_intent = intent
+            logger.info(
+                "Generating plan: capability=%s (pre-resolved)",
+                execution_intent.capability,
+            )
+        else:
+            execution_intent = self.goal_resolver.resolve(intent)
+            logger.info(
+                "Generating plan: goal=%s → capability=%s",
+                intent.goal,
+                execution_intent.capability,
+            )
+        self.last_execution_intent = execution_intent
+
+        # Step 2: Inject memory into execution intent
+        enriched_intent, memory_context = self._inject_memory(execution_intent, session_id=session_id)
         self.last_memory_context = memory_context
+
+        # Step 3: Decompose into execution steps
         base_plan = self.task_decomposer.decompose(enriched_intent)
+
+        # Step 4: Optionally expand with LLM-based function calling
         plan = self.function_planner.expand_plan(
             intent=enriched_intent,
             base_plan=base_plan,
             memory_context=memory_context,
         )
-        
+
         logger.debug("Plan generated with %d steps", len(plan.steps))
         return plan
 
@@ -81,7 +127,7 @@ class PlannerService:
             except Exception as e:
                 logger.warning("PlannerService memory close failed: %s", e)
 
-    def _inject_memory(self, intent: IntentOutput, session_id: str | None) -> tuple[IntentOutput, dict[str, Any]]:
+    def _inject_memory(self, intent: ExecutionIntent, session_id: str | None) -> tuple[ExecutionIntent, dict[str, Any]]:
         if not self.memory_enabled or self.memory_store is None:
             return intent, {"enabled": False}
 

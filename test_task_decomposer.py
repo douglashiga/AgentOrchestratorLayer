@@ -1,5 +1,5 @@
 from planner.task_decomposer import TaskDecomposer
-from shared.models import IntentOutput
+from shared.models import ExecutionIntent
 
 
 def test_finance_notify_plan_is_multi_domain():
@@ -37,7 +37,7 @@ def test_finance_notify_plan_is_multi_domain():
             },
         ]
     )
-    intent = IntentOutput(
+    intent = ExecutionIntent(
         domain="finance",
         capability="get_stock_price",
         confidence=1.0,
@@ -69,7 +69,7 @@ def test_default_plan_is_single_step():
             }
         ]
     )
-    intent = IntentOutput(
+    intent = ExecutionIntent(
         domain="finance",
         capability="get_stock_price",
         confidence=1.0,
@@ -118,7 +118,7 @@ def test_method_contract_takes_precedence_over_legacy_composition() -> None:
             },
         ]
     )
-    intent = IntentOutput(
+    intent = ExecutionIntent(
         domain="finance",
         capability="get_stock_price",
         confidence=1.0,
@@ -134,7 +134,7 @@ def test_method_contract_takes_precedence_over_legacy_composition() -> None:
 
 def test_multi_symbol_get_price_generates_parallel_dag() -> None:
     decomposer = TaskDecomposer(capability_catalog=[])
-    intent = IntentOutput(
+    intent = ExecutionIntent(
         domain="finance",
         capability="get_stock_price",
         confidence=1.0,
@@ -188,7 +188,7 @@ def test_multi_symbol_notify_adds_notifier_followup_when_catalog_supports_it() -
             },
         ]
     )
-    intent = IntentOutput(
+    intent = ExecutionIntent(
         domain="finance",
         capability="get_stock_price",
         confidence=1.0,
@@ -208,7 +208,7 @@ def test_multi_symbol_notify_adds_notifier_followup_when_catalog_supports_it() -
 
 def test_decomposer_prefers_execution_steps_hint_from_intent_parameters() -> None:
     decomposer = TaskDecomposer(capability_catalog=[])
-    intent = IntentOutput(
+    intent = ExecutionIntent(
         domain="finance",
         capability="get_stock_price",
         confidence=1.0,

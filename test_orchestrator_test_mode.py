@@ -2,7 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 from orchestrator.orchestrator import Orchestrator
-from shared.models import DomainOutput, IntentOutput
+from shared.models import DomainOutput, ExecutionIntent
 
 
 def test_orchestrator_test_mode_stops_before_domain_execution(monkeypatch):
@@ -23,7 +23,7 @@ def test_orchestrator_test_mode_stops_before_domain_execution(monkeypatch):
         model_selector = MagicMock()
         orchestrator = Orchestrator(domain_registry=registry, model_selector=model_selector)
 
-        intent = IntentOutput(
+        intent = ExecutionIntent(
             domain="finance",
             capability="get_stock_price",
             confidence=0.20,  # below threshold; test mode should bypass confidence gating

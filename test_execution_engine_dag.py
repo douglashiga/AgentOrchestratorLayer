@@ -2,14 +2,14 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 from execution.engine import ExecutionEngine
-from shared.models import DomainOutput, ExecutionPlan, ExecutionStep, IntentOutput
+from shared.models import DomainOutput, ExecutionIntent, ExecutionPlan, ExecutionStep
 
 
 def test_execution_engine_dag_combines_results():
     async def _run() -> None:
         orchestrator = MagicMock()
 
-        async def process(intent: IntentOutput) -> DomainOutput:
+        async def process(intent: ExecutionIntent) -> DomainOutput:
             if intent.capability == "get_stock_price":
                 return DomainOutput(
                     status="success",
@@ -51,7 +51,7 @@ def test_execution_engine_dag_combines_results():
             ],
         )
 
-        original_intent = IntentOutput(
+        original_intent = ExecutionIntent(
             domain="finance",
             capability="get_stock_price",
             confidence=1.0,

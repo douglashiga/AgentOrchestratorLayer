@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from planner.service import PlannerService
-from shared.models import IntentOutput
+from shared.models import ExecutionIntent
 
 
 class DummyMemoryStore:
@@ -52,7 +52,7 @@ def test_planner_injects_market_from_memory_when_missing():
     ]
 
     planner = PlannerService(capability_catalog=catalog, model_selector=None, memory_store=memory)
-    intent = IntentOutput(
+    intent = ExecutionIntent(
         domain="finance",
         capability="get_top_gainers",
         confidence=1.0,
@@ -84,7 +84,7 @@ def test_planner_does_not_override_explicit_param():
     ]
 
     planner = PlannerService(capability_catalog=catalog, model_selector=None, memory_store=memory)
-    intent = IntentOutput(
+    intent = ExecutionIntent(
         domain="finance",
         capability="get_top_gainers",
         confidence=1.0,

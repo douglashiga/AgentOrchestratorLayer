@@ -15,7 +15,7 @@ import logging
 import re
 from typing import Any
 
-from shared.models import Decision, DomainOutput, ExecutionContext, IntentOutput
+from shared.models import Decision, DomainOutput, ExecutionContext, ExecutionIntent, IntentOutput
 from domains.finance.context import ContextResolver
 from domains.finance.core import StrategyCore
 from domains.finance.symbol_resolver import SymbolResolver
@@ -62,7 +62,7 @@ class FinanceDomainHandler:
                 enable_llm=bool(model_selector),
             )
 
-    async def execute(self, intent: IntentOutput) -> DomainOutput:
+    async def execute(self, intent: IntentOutput | ExecutionIntent) -> DomainOutput:
         """
         Execute finance capability with type-safe dispatch.
         Attempts to find a specific handler method (e.g. get_top_gainers) 
@@ -131,30 +131,30 @@ class FinanceDomainHandler:
 
     # ─── Typed Capabilities ──────────────────────────────────────────
 
-    async def get_top_gainers(self, intent: IntentOutput, params: TopGainersInput) -> DomainOutput:
+    async def get_top_gainers(self, intent: IntentOutput | ExecutionIntent, params: TopGainersInput) -> DomainOutput:
         return await self._run_pipeline(intent, params.model_dump())
 
-    async def get_top_losers(self, intent: IntentOutput, params: TopLosersInput) -> DomainOutput:
+    async def get_top_losers(self, intent: IntentOutput | ExecutionIntent, params: TopLosersInput) -> DomainOutput:
         return await self._run_pipeline(intent, params.model_dump())
 
-    async def get_stock_price(self, intent: IntentOutput, params: StockPriceInput) -> DomainOutput:
+    async def get_stock_price(self, intent: IntentOutput | ExecutionIntent, params: StockPriceInput) -> DomainOutput:
         return await self._run_pipeline(intent, params.model_dump())
 
-    async def get_historical_data(self, intent: IntentOutput, params: HistoricalDataInput) -> DomainOutput:
+    async def get_historical_data(self, intent: IntentOutput | ExecutionIntent, params: HistoricalDataInput) -> DomainOutput:
         return await self._run_pipeline(intent, params.model_dump())
 
-    async def get_stock_screener(self, intent: IntentOutput, params: StockScreenerInput) -> DomainOutput:
+    async def get_stock_screener(self, intent: IntentOutput | ExecutionIntent, params: StockScreenerInput) -> DomainOutput:
         return await self._run_pipeline(intent, params.model_dump())
 
-    async def get_technical_signals(self, intent: IntentOutput, params: TechnicalSignalsInput) -> DomainOutput:
+    async def get_technical_signals(self, intent: IntentOutput | ExecutionIntent, params: TechnicalSignalsInput) -> DomainOutput:
         return await self._run_pipeline(intent, params.model_dump())
         
-    async def compare_fundamentals(self, intent: IntentOutput, params: CompareFundamentalsInput) -> DomainOutput:
+    async def compare_fundamentals(self, intent: IntentOutput | ExecutionIntent, params: CompareFundamentalsInput) -> DomainOutput:
         return await self._run_pipeline(intent, params.model_dump())
 
     # ─── Unified Execution Pipeline ──────────────────────────────────
 
-    async def _run_pipeline(self, intent: IntentOutput, params: dict) -> DomainOutput:
+    async def _run_pipeline(self, intent: IntentOutput | ExecutionIntent, params: dict) -> DomainOutput:
         """
         Unified pipeline for ALL finance executions (Typed & Generic).
         1. Metadata Check (Clarification overlap?) - Skipped if Typed (Pydantic handles valid structure)
@@ -373,7 +373,7 @@ class FinanceDomainHandler:
             metadata={"error": decision.error, "classification": "operational_unavailable"},
         )
 
-    async def _generic_execute(self, intent: IntentOutput, resolved_params: dict) -> DomainOutput:
+    async def _generic_execute(self, intent: IntentOutput | ExecutionIntent, resolved_params: dict) -> DomainOutput:
         """Legacy generic execution path - delegates to unified pipeline."""
         if intent.capability == "chat":
             return DomainOutput(
@@ -387,7 +387,7 @@ class FinanceDomainHandler:
         
         return await self._run_pipeline(intent, resolved_params)
 
-    def _resolve_parameters(self, intent: IntentOutput, params: dict) -> dict:
+    def _resolve_parameters(self, intent: IntentOutput | ExecutionIntent, params: dict) -> dict:
         """
         Apply default values from metadata to missing parameters.
         Mutates `params` in-place.

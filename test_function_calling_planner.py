@@ -1,7 +1,7 @@
 import os
 
 from planner.function_calling_planner import FunctionCallingPlanner
-from shared.models import ExecutionPlan, ExecutionStep, IntentOutput
+from shared.models import ExecutionIntent, ExecutionPlan, ExecutionStep
 
 
 class DummySelector:
@@ -76,7 +76,7 @@ def test_function_calling_planner_adds_valid_step():
     ]
 
     planner = FunctionCallingPlanner(model_selector=selector, capability_catalog=catalog)
-    intent = IntentOutput(
+    intent = ExecutionIntent(
         domain="finance",
         capability="get_stock_price",
         confidence=0.99,
@@ -118,7 +118,7 @@ def test_function_calling_planner_rejects_unknown_capability():
     ]
 
     planner = FunctionCallingPlanner(model_selector=selector, capability_catalog=catalog)
-    intent = IntentOutput(
+    intent = ExecutionIntent(
         domain="finance",
         capability="get_stock_price",
         confidence=0.99,
@@ -173,7 +173,7 @@ def test_function_calling_planner_rejects_notifier_without_explicit_notify():
     ]
 
     planner = FunctionCallingPlanner(model_selector=selector, capability_catalog=catalog)
-    intent = IntentOutput(
+    intent = ExecutionIntent(
         domain="finance",
         capability="get_stock_price",
         confidence=0.99,

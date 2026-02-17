@@ -33,6 +33,20 @@ class RegistryDB:
         """Initialize database schema."""
         with self._get_conn() as conn:
             conn.executescript("""
+                -- Migration: add entities_schema column if missing
+                -- SQLite ignores ALTER TABLE if column exists via pragma check
+            """)
+            # Safe migration for existing databases
+            try:
+                conn.execute("SELECT entities_schema FROM goals LIMIT 0")
+            except sqlite3.OperationalError:
+                try:
+                    conn.execute("ALTER TABLE goals ADD COLUMN entities_schema TEXT DEFAULT '{}'")
+                    logger.info("Migrated goals table: added entities_schema column")
+                except Exception:
+                    pass  # Table doesn't exist yet, will be created below
+
+            conn.executescript("""
                 CREATE TABLE IF NOT EXISTS domains (
                     id TEXT PRIMARY KEY,
                     name TEXT UNIQUE NOT NULL,
@@ -49,6 +63,19 @@ class RegistryDB:
                     description TEXT,
                     input_schema TEXT, -- JSON
                     metadata TEXT DEFAULT '{}', -- JSON for UI hints, templates, etc.
+                    FOREIGN KEY(domain_id) REFERENCES domains(id) ON DELETE CASCADE,
+                    UNIQUE(domain_id, name)
+                );
+
+                CREATE TABLE IF NOT EXISTS goals (
+                    id TEXT PRIMARY KEY,
+                    domain_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    capabilities TEXT NOT NULL DEFAULT '[]',       -- JSON array of capability names
+                    requires_domains TEXT NOT NULL DEFAULT '[]',   -- JSON array of domain names (cross-domain deps)
+                    hints TEXT DEFAULT '{}',                        -- JSON {keywords: [...], examples: [...]}
+                    entities_schema TEXT DEFAULT '{}',              -- JSON schema for intent entity extraction
                     FOREIGN KEY(domain_id) REFERENCES domains(id) ON DELETE CASCADE,
                     UNIQUE(domain_id, name)
                 );
@@ -158,5 +185,84 @@ class RegistryDB:
 
             placeholders = ",".join(["?"] * len(cleaned))
             query = f"DELETE FROM capabilities WHERE domain_id = ? AND name NOT IN ({placeholders})"
+            cursor = conn.execute(query, [domain_id, *cleaned])
+            return int(cursor.rowcount or 0)
+
+    # ─── Goals ────────────────────────────────────────────────────
+
+    def register_goal(
+        self,
+        domain_name: str,
+        name: str,
+        description: str = "",
+        capabilities: list[str] | None = None,
+        requires_domains: list[str] | None = None,
+        hints: dict[str, Any] | None = None,
+        entities_schema: dict[str, Any] | None = None,
+    ) -> None:
+        """Register or update a goal for a domain."""
+        with self._get_conn() as conn:
+            domain = conn.execute("SELECT id FROM domains WHERE name = ?", (domain_name,)).fetchone()
+            if not domain:
+                raise ValueError(f"Domain not found: {domain_name}")
+
+            domain_id = domain["id"]
+            capabilities_json = json.dumps(capabilities or [])
+            requires_domains_json = json.dumps(requires_domains or [])
+            hints_json = json.dumps(hints or {})
+            entities_schema_json = json.dumps(entities_schema or {})
+
+            existing = conn.execute(
+                "SELECT id FROM goals WHERE domain_id = ? AND name = ?",
+                (domain_id, name),
+            ).fetchone()
+
+            if existing:
+                conn.execute(
+                    "UPDATE goals SET description = ?, capabilities = ?, requires_domains = ?, hints = ?, entities_schema = ? WHERE id = ?",
+                    (description, capabilities_json, requires_domains_json, hints_json, entities_schema_json, existing["id"]),
+                )
+            else:
+                goal_id = str(uuid.uuid4())
+                conn.execute(
+                    "INSERT INTO goals (id, domain_id, name, description, capabilities, requires_domains, hints, entities_schema) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (goal_id, domain_id, name, description, capabilities_json, requires_domains_json, hints_json, entities_schema_json),
+                )
+
+            logger.info("Registered goal: %s -> %s", domain_name, name)
+
+    def list_goals(self, domain_name: str | None = None) -> list[dict[str, Any]]:
+        """List goals, optionally filtered by domain."""
+        with self._get_conn() as conn:
+            query = """
+                SELECT g.name as goal, g.description, g.capabilities, g.requires_domains, g.hints,
+                       g.entities_schema, d.name as domain
+                FROM goals g
+                JOIN domains d ON g.domain_id = d.id
+                WHERE d.enabled = 1
+            """
+            params: list[str] = []
+            if domain_name:
+                query += " AND d.name = ?"
+                params.append(domain_name)
+
+            rows = conn.execute(query, params).fetchall()
+            return [dict(r) for r in rows]
+
+    def delete_goals_except(self, domain_name: str, keep_names: list[str]) -> int:
+        """Remove goals for a domain not in keep_names. Returns removed count."""
+        with self._get_conn() as conn:
+            domain = conn.execute("SELECT id FROM domains WHERE name = ?", (domain_name,)).fetchone()
+            if not domain:
+                return 0
+
+            domain_id = domain["id"]
+            cleaned = [str(n).strip() for n in keep_names if str(n).strip()]
+            if not cleaned:
+                cursor = conn.execute("DELETE FROM goals WHERE domain_id = ?", (domain_id,))
+                return int(cursor.rowcount or 0)
+
+            placeholders = ",".join(["?"] * len(cleaned))
+            query = f"DELETE FROM goals WHERE domain_id = ? AND name NOT IN ({placeholders})"
             cursor = conn.execute(query, [domain_id, *cleaned])
             return int(cursor.rowcount or 0)

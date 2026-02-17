@@ -24,6 +24,7 @@ class HandlerRegistry:
         self._capabilities: dict[str, Any] = {}
         self._metadata: dict[str, dict] = {}
         self._method_specs: dict[str, MethodSpec] = {}
+        self._goals: dict[str, dict[str, Any]] = {}  # "domain:GOAL_NAME" → goal_def
 
     def register_domain(self, domain_name: str, handler: Any) -> None:
         """Register a handler for a high-level domain."""
@@ -73,6 +74,49 @@ class HandlerRegistry:
     @property
     def registered_capabilities(self) -> list[str]:
         return list(self._capabilities.keys())
+
+    # ─── Goals ─────────────────────────────────────────────────
+
+    def register_goal(self, domain: str, goal_name: str, goal_def: dict[str, Any]) -> None:
+        """Register a goal for a domain."""
+        key = f"{domain}:{goal_name}"
+        self._goals[key] = goal_def
+        logger.info("Registered goal: %s", key)
+
+    def resolve_goal(self, domain: str, goal_name: str) -> dict[str, Any] | None:
+        """Resolve a goal definition by domain and goal name."""
+        return self._goals.get(f"{domain}:{goal_name}")
+
+    def list_goals_for_domain(self, domain: str) -> list[dict[str, Any]]:
+        """List all goals registered for a domain."""
+        prefix = f"{domain}:"
+        return [v for k, v in self._goals.items() if k.startswith(prefix)]
+
+    def build_goal_catalog(self) -> list[dict[str, Any]]:
+        """Build a catalog of domains with their goals for the intent prompt.
+        Returns list of dicts: [{domain, description, goals: [{goal, description, hints, entities_schema}]}]
+        Includes entities_schema so the Intent LLM knows what entities to extract.
+        NO capabilities or parameter specs — intent never sees those.
+        """
+        domain_map: dict[str, dict[str, Any]] = {}
+        for key, goal_def in self._goals.items():
+            domain = key.split(":", 1)[0]
+            if domain not in domain_map:
+                domain_map[domain] = {"domain": domain, "description": "", "goals": []}
+            goal_entry: dict[str, Any] = {
+                "goal": goal_def.get("goal", key.split(":", 1)[1]),
+                "description": goal_def.get("description", ""),
+                "hints": goal_def.get("hints", {}),
+            }
+            entities_schema = goal_def.get("entities_schema")
+            if isinstance(entities_schema, dict) and entities_schema:
+                goal_entry["entities_schema"] = entities_schema
+            domain_map[domain]["goals"].append(goal_entry)
+        return list(domain_map.values())
+
+    def build_goal_catalog_dict(self) -> dict[str, dict[str, Any]]:
+        """Build a dict of goals keyed by 'domain:GOAL_NAME' for planner resolution."""
+        return dict(self._goals)
 
     def _parse_method_spec(self, capability: str, metadata: dict[str, Any]) -> MethodSpec | None:
         """Best-effort parser for method contracts embedded in capability metadata."""

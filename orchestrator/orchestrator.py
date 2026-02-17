@@ -17,7 +17,7 @@ import logging
 import inspect
 import os
 
-from shared.models import DomainOutput, IntentOutput
+from shared.models import DomainOutput, ExecutionIntent, IntentOutput
 from registry.domain_registry import HandlerRegistry
 from models.selector import ModelSelector
 
@@ -43,7 +43,7 @@ class Orchestrator:
             "on",
         )
 
-    async def process(self, intent: IntentOutput) -> DomainOutput:
+    async def process(self, intent: IntentOutput | ExecutionIntent) -> DomainOutput:
         """
         Resolve the domain from the intent and delegate execution.
         Returns a DomainOutput — never raises for business errors.
@@ -135,7 +135,7 @@ class Orchestrator:
                 metadata={"error": str(e)}
             )
 
-    def _is_test_mode(self, intent: IntentOutput) -> bool:
+    def _is_test_mode(self, intent: IntentOutput | ExecutionIntent) -> bool:
         if self.test_mode_enabled:
             return True
         params = intent.parameters or {}

@@ -3,16 +3,16 @@ import asyncio
 from execution.engine import ExecutionEngine
 from execution.task_state_store import TaskStateStore
 from registry.domain_registry import HandlerRegistry
-from shared.models import DomainOutput, ExecutionPlan, ExecutionStep, IntentOutput
+from shared.models import DomainOutput, ExecutionIntent, ExecutionPlan, ExecutionStep
 from shared.workflow_contracts import ClarificationAnswer
 
 
 class _CatalogOrchestrator:
     def __init__(self) -> None:
         self.domain_registry = HandlerRegistry()
-        self.calls: list[IntentOutput] = []
+        self.calls: list[ExecutionIntent] = []
 
-    async def process(self, intent: IntentOutput) -> DomainOutput:
+    async def process(self, intent: ExecutionIntent) -> DomainOutput:
         self.calls.append(intent)
         if intent.capability == "market_get_quote":
             symbol = str(intent.parameters.get("symbol", "")).strip()
@@ -100,7 +100,7 @@ def test_execute_plan_uses_catalog_method_spec_with_pause_resume(tmp_path) -> No
                 )
             ],
         )
-        original_intent = IntentOutput(
+        original_intent = ExecutionIntent(
             domain="finance",
             capability="get_stock_price",
             confidence=1.0,

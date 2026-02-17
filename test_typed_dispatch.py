@@ -3,7 +3,7 @@ import logging
 from unittest.mock import MagicMock
 
 from domains.finance.handler import FinanceDomainHandler
-from shared.models import IntentOutput
+from shared.models import ExecutionIntent
 from skills.gateway import SkillGateway
 
 # Setup logging
@@ -17,7 +17,7 @@ def test_missing_param_clarification():
         registry.get_metadata.return_value = {}
 
         handler = FinanceDomainHandler(skill_gateway=gateway, registry=registry)
-        intent = IntentOutput(
+        intent = ExecutionIntent(
             domain="finance",
             capability="get_top_gainers",
             confidence=1.0,
@@ -39,7 +39,7 @@ def test_valid_execution():
         registry.get_metadata.return_value = {}
 
         handler = FinanceDomainHandler(skill_gateway=gateway, registry=registry)
-        intent = IntentOutput(
+        intent = ExecutionIntent(
             domain="finance",
             capability="get_top_gainers",
             confidence=1.0,

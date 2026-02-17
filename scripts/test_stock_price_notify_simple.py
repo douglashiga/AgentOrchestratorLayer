@@ -10,7 +10,7 @@ import asyncio
 import os
 
 from main import build_pipeline
-from shared.models import IntentOutput
+from shared.models import ExecutionIntent
 
 
 async def run_flow() -> int:
@@ -27,7 +27,7 @@ async def run_flow() -> int:
     ) = build_pipeline()
 
     try:
-        intent = IntentOutput(
+        intent = ExecutionIntent(
             domain="finance",
             capability="get_stock_price",
             confidence=1.0,

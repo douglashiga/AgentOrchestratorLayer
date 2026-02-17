@@ -4,17 +4,17 @@ import time
 from execution.engine import ExecutionEngine
 from execution.task_state_store import TaskStateStore
 from registry.domain_registry import HandlerRegistry
-from shared.models import DomainOutput, IntentOutput
+from shared.models import DomainOutput, ExecutionIntent
 from shared.workflow_contracts import MethodSpec
 
 
 class _AdvancedOrchestrator:
     def __init__(self) -> None:
         self.domain_registry = HandlerRegistry()
-        self.calls: list[IntentOutput] = []
+        self.calls: list[ExecutionIntent] = []
         self._transient_attempts = 0
 
-    async def process(self, intent: IntentOutput) -> DomainOutput:
+    async def process(self, intent: ExecutionIntent) -> DomainOutput:
         self.calls.append(intent)
         cap = intent.capability
         if cap == "transient_quote":
@@ -90,7 +90,7 @@ def test_retry_and_idempotency_are_applied(tmp_path) -> None:
             },
         )
 
-        intent = IntentOutput(
+        intent = ExecutionIntent(
             domain="finance",
             capability="get_stock_price",
             confidence=1.0,
@@ -164,7 +164,7 @@ def test_workflow_dag_runs_parallel_batch(tmp_path) -> None:
             },
         )
 
-        intent = IntentOutput(
+        intent = ExecutionIntent(
             domain="finance",
             capability="parallel_quotes",
             confidence=1.0,

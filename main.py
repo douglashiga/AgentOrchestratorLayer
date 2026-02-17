@@ -38,7 +38,7 @@ from skills.registry import SkillRegistry
 from skills.implementations.mcp_adapter import MCPAdapter
 from memory.store import SQLiteMemoryStore
 from models.selector import ModelSelector
-from shared.models import EntryRequest, IntentOutput
+from shared.models import EntryRequest, ExecutionIntent, IntentOutput
 from shared.response_formatter import format_domain_output
 from shared.workflow_contracts import ClarificationAnswer
 
@@ -892,20 +892,33 @@ def build_pipeline() -> tuple[
 
     # Core
     orchestrator = Orchestrator(domain_registry=runtime_registry, model_selector=model_selector)
-    
-    # Get all registered capabilities for the Intent Adapter
-    registered_capabilities = runtime_registry.registered_capabilities
+
+    # Build goal catalog for Intent Adapter (goals only, no capabilities)
+    goal_catalog = runtime_registry.build_goal_catalog()
+    # Flatten goal catalog into per-goal items for the intent adapter
+    goal_catalog_flat: list[dict[str, Any]] = []
+    for domain_entry in goal_catalog:
+        domain_name = domain_entry.get("domain", "")
+        domain_desc = domain_entry.get("description", "")
+        for goal_item in domain_entry.get("goals", []):
+            flat_item = dict(goal_item)
+            flat_item["domain"] = domain_name
+            flat_item["domain_description"] = domain_desc
+            goal_catalog_flat.append(flat_item)
+
     capability_catalog = db.list_capabilities()
+    goal_catalog_dict = runtime_registry.build_goal_catalog_dict()
+
     intent_adapter = IntentAdapter(
         model_selector=model_selector,
-        initial_capabilities=registered_capabilities,
-        capability_catalog=capability_catalog,
+        goal_catalog=goal_catalog_flat,
     )
-    
+
     planner_service = PlannerService(
         capability_catalog=capability_catalog,
         model_selector=model_selector,
         memory_store=memory_store,
+        goal_catalog_dict=goal_catalog_dict,
     )
     execution_engine = ExecutionEngine(orchestrator=orchestrator)
     conversation_manager = ConversationManager(db_path=DB_PATH)
@@ -1097,6 +1110,7 @@ async def run_telegram_loop() -> None:
                         entry_request.model_dump(mode="json"),
                     )
                     history = conversation.get_history(entry_request.session_id)
+                    tg_intent_output: IntentOutput | None = None  # Set during extraction
                     pending_intent = pending_confirmation_by_session.get(entry_request.session_id)
                     pending_workflow = pending_workflow_by_session.get(entry_request.session_id)
 
@@ -1172,7 +1186,7 @@ async def run_telegram_loop() -> None:
                             await telegram_entry.send_message(chat_id, msg)
                             continue
                     else:
-                        intent = intent_adapter.extract(
+                        tg_intent_output = intent_adapter.extract(
                             entry_request.input_text,
                             history,
                             session_id=entry_request.session_id,
@@ -1181,8 +1195,10 @@ async def run_telegram_loop() -> None:
                             telegram_entry,
                             chat_id,
                             "intent_extracted",
-                            intent.model_dump(mode="json"),
+                            tg_intent_output.model_dump(mode="json"),
                         )
+                        # Resolve goal → capability
+                        intent = planner.resolve_intent(tg_intent_output)
                         intent = _normalize_intent_parameters(
                             intent,
                             engine.orchestrator.domain_registry,
@@ -1209,7 +1225,8 @@ async def run_telegram_loop() -> None:
                             await telegram_entry.send_message(chat_id, question)
                             continue
 
-                    plan = planner.generate_plan(intent, session_id=entry_request.session_id)
+                    plan_input = tg_intent_output if tg_intent_output is not None else intent
+                    plan = planner.generate_plan(plan_input, session_id=entry_request.session_id)
                     await _send_telegram_debug_json(
                         telegram_entry,
                         chat_id,
@@ -1331,6 +1348,7 @@ async def run_agent_loop() -> None:
                     continue
 
                 entry_request = cli.read_input(raw_input)
+                intent_output: IntentOutput | None = None  # Set during extraction
 
                 # Step 2: Conversation — get history
                 history = conversation.get_history(entry_request.session_id)
@@ -1346,7 +1364,7 @@ async def run_agent_loop() -> None:
                     with console.status("[green]Resuming workflow...[/green]", spinner="dots"):
                         output = await engine.resume_task(resume_answer)
                     render_result(
-                        intent=IntentOutput(
+                        intent=ExecutionIntent(
                             domain="workflow",
                             capability="resume_task",
                             confidence=1.0,
@@ -1394,11 +1412,10 @@ async def run_agent_loop() -> None:
                         console.print()
                         continue
                 else:
-                    # Step 3: Intent Adapter — extract intent (LLM)
+                    # Step 3: Intent Adapter — extract goal-based intent (LLM)
                     with console.status("[yellow]Thinking...[/yellow]", spinner="dots"):
                         try:
-                            # Intent extraction is still sync/blocking (HTTP client), which is fine for CLI
-                            intent = intent_adapter.extract(
+                            intent_output = intent_adapter.extract(
                                 entry_request.input_text,
                                 history,
                                 session_id=entry_request.session_id,
@@ -1408,6 +1425,9 @@ async def run_agent_loop() -> None:
                             conversation.save(entry_request.session_id, "user", entry_request.input_text)
                             conversation.save(entry_request.session_id, "assistant", f"Error: {e}")
                             continue
+
+                    # Step 3b: Resolve goal → capability (deterministic)
+                    intent = planner.resolve_intent(intent_output)
 
                     intent = _normalize_intent_parameters(
                         intent,
@@ -1435,13 +1455,16 @@ async def run_agent_loop() -> None:
                         continue
 
                 # Step 4: Planner (Decomposition)
+                # intent_output is set when going through normal extraction (IntentOutput from LLM).
+                # When coming from a confirmed pending intent, intent_output is None and intent
+                # is already a resolved ExecutionIntent — planner accepts both types.
+                plan_input = intent_output if intent_output is not None else intent
                 with console.status("[blue]Planning...[/blue]", spinner="dots"):
-                    plan = planner.generate_plan(intent, session_id=entry_request.session_id)
+                    plan = planner.generate_plan(plan_input, session_id=entry_request.session_id)
                     logger.info("Plan generated: %d steps", len(plan.steps))
 
                 # Step 5-8: Execution Engine (Orchestrator + Domain + Model)
                 with console.status("[green]Executing...[/green]", spinner="dots"):
-                    # await the async engine
                     output = await engine.execute_plan(plan, original_intent=intent)
 
                 # Step 9: Render output

@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 
 from registry.http_handler import HttpDomainHandler
-from shared.models import IntentOutput
+from shared.models import ExecutionIntent
 
 
 def main() -> int:
@@ -18,7 +18,7 @@ def main() -> int:
     chat_id = os.getenv("TELEGRAM_DEFAULT_CHAT_ID", "").strip()
 
     handler = HttpDomainHandler(base_url=communication_url, timeout=20.0)
-    intent = IntentOutput(
+    intent = ExecutionIntent(
         domain="communication",
         capability="send_telegram_message",
         confidence=1.0,

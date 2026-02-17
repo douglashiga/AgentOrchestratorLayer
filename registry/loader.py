@@ -99,10 +99,42 @@ class RegistryLoader:
                         )
                         
                         self.registry.register_capability(
-                            cap["capability"], 
-                            handler, 
+                            cap["capability"],
+                            handler,
                             metadata=cap_metadata
                         )
+
+                    # Register goals into runtime registry
+                    goals = self.db.list_goals(name)
+                    for goal_row in goals:
+                        goal_name = str(goal_row.get("goal", "")).strip()
+                        if not goal_name:
+                            continue
+                        try:
+                            caps_list = json.loads(goal_row["capabilities"]) if goal_row.get("capabilities") else []
+                        except Exception:
+                            caps_list = []
+                        try:
+                            req_domains = json.loads(goal_row["requires_domains"]) if goal_row.get("requires_domains") else []
+                        except Exception:
+                            req_domains = []
+                        try:
+                            hints = json.loads(goal_row["hints"]) if goal_row.get("hints") else {}
+                        except Exception:
+                            hints = {}
+                        try:
+                            entities_schema = json.loads(goal_row["entities_schema"]) if goal_row.get("entities_schema") else {}
+                        except Exception:
+                            entities_schema = {}
+                        self.registry.register_goal(name, goal_name, {
+                            "goal": goal_name,
+                            "description": str(goal_row.get("description", "")).strip(),
+                            "capabilities": caps_list if isinstance(caps_list, list) else [],
+                            "requires_domains": req_domains if isinstance(req_domains, list) else [],
+                            "hints": hints if isinstance(hints, dict) else {},
+                            "entities_schema": entities_schema if isinstance(entities_schema, dict) else {},
+                        })
+                    logger.info("Domain '%s' has %d goals in DB", name, len(goals))
                 else:
                     logger.warning("No handler factory for domain '%s' (type=%s)", name, dtype)
                         
@@ -144,6 +176,30 @@ class RegistryLoader:
                     "keywords": ["o que voce faz", "what can you do", "listar capacidades"],
                     "examples": ["quais capacidades voce tem?"],
                 },
+            },
+        )
+
+        # Register goals for general domain
+        self.db.register_goal(
+            domain_name="general",
+            name="CHAT",
+            description="General conversation and help",
+            capabilities=["chat"],
+            requires_domains=[],
+            hints={
+                "keywords": ["oi", "olá", "hello", "ajuda", "help", "conversar"],
+                "examples": ["oi", "me ajuda com isso"],
+            },
+        )
+        self.db.register_goal(
+            domain_name="general",
+            name="LIST_CAPABILITIES",
+            description="List available system capabilities",
+            capabilities=["list_capabilities"],
+            requires_domains=[],
+            hints={
+                "keywords": ["o que voce faz", "what can you do", "listar capacidades"],
+                "examples": ["quais capacidades voce tem?"],
             },
         )
 
@@ -286,12 +342,41 @@ class RegistryLoader:
                 )
 
             removed = self.db.delete_capabilities_except(domain_name=domain_name, keep_names=registered_names)
+
+            # Sync goals from manifest
+            goals = manifest.get("goals", []) if isinstance(manifest, dict) else []
+            registered_goal_names: list[str] = []
+            if isinstance(goals, list):
+                for goal_def in goals:
+                    if not isinstance(goal_def, dict):
+                        continue
+                    goal_name = str(goal_def.get("goal", "")).strip()
+                    if not goal_name:
+                        continue
+                    registered_goal_names.append(goal_name)
+                    raw_caps = goal_def.get("capabilities", [])
+                    raw_req = goal_def.get("requires_domains", [])
+                    raw_hints = goal_def.get("hints", {})
+                    raw_entities_schema = goal_def.get("entities_schema", {})
+                    self.db.register_goal(
+                        domain_name=domain_name,
+                        name=goal_name,
+                        description=str(goal_def.get("description", "")).strip(),
+                        capabilities=raw_caps if isinstance(raw_caps, list) else [],
+                        requires_domains=raw_req if isinstance(raw_req, list) else [],
+                        hints=raw_hints if isinstance(raw_hints, dict) else {},
+                        entities_schema=raw_entities_schema if isinstance(raw_entities_schema, dict) else {},
+                    )
+            goals_removed = self.db.delete_goals_except(domain_name=domain_name, keep_names=registered_goal_names)
+
             logger.info(
-                "Synced %d capabilities for domain %s via %s (removed %d stale entries)",
+                "Synced %d capabilities + %d goals for domain %s via %s (removed %d caps, %d goals stale)",
                 len(registered_names),
+                len(registered_goal_names),
                 domain_name,
                 source,
                 removed,
+                goals_removed,
             )
             return True
             

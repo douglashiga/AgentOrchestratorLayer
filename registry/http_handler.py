@@ -12,7 +12,7 @@ import logging
 import httpx
 from typing import Any
 
-from shared.models import IntentOutput, DomainOutput
+from shared.models import ExecutionIntent, IntentOutput, DomainOutput
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ class HttpDomainHandler:
         if auth_token:
             self.headers["Authorization"] = f"Bearer {auth_token}"
 
-    async def execute(self, intent: IntentOutput) -> DomainOutput:
+    async def execute(self, intent: IntentOutput | ExecutionIntent) -> DomainOutput:
         """
         Execute intent via Remote Domain Protocol.
         POST /execute

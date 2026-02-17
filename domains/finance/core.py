@@ -15,7 +15,7 @@ Critical Rules:
 import logging
 from typing import Any
 
-from shared.models import Decision, DomainContext, ExecutionContext, IntentOutput
+from shared.models import Decision, DomainContext, ExecutionContext, ExecutionIntent, IntentOutput
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class StrategyCore:
     """Deterministic strategy engine. Structures skill data into Decisions."""
 
-    def execute(self, intent: IntentOutput, execution_context: ExecutionContext, registry: Any = None) -> Decision:
+    def execute(self, intent: IntentOutput | ExecutionIntent, execution_context: ExecutionContext, registry: Any = None) -> Decision:
         """
         Process intent + execution context into a Decision.
         For v1: structures skill data into a clean Decision response.
@@ -108,7 +108,7 @@ class StrategyCore:
         )
 
     def _generate_explanation(
-        self, intent: IntentOutput, result: dict, domain_ctx: DomainContext, registry: Any = None
+        self, intent: IntentOutput | ExecutionIntent, result: dict, domain_ctx: DomainContext, registry: Any = None
     ) -> str:
         """Generate deterministic human-readable explanation."""
         capability = intent.capability

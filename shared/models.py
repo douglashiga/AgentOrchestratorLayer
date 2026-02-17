@@ -21,16 +21,64 @@ class EntryRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-# ─── Intent Layer (New v2) ─────────────────────────────────────
+# ─── Goal Layer ───────────────────────────────────────────────
+
+class GoalDefinition(BaseModel):
+    """A business-level goal within a domain.
+    Goals sit between Domain and Capability:
+      Domain → Goals (business objectives) → Capabilities (executable)
+    """
+    model_config = {"frozen": True}
+    goal: str = Field(..., description="Goal identifier, e.g. 'GET_QUOTE', 'IMPACT_ANALYSIS'")
+    description: str = Field(default="", description="Human-readable goal description")
+    capabilities: list[str] = Field(default_factory=list, description="Capabilities this goal maps to")
+    requires_domains: list[str] = Field(default_factory=list, description="Cross-domain dependencies, e.g. ['NEWS', 'PORTFOLIO']")
+    hints: dict[str, Any] = Field(default_factory=dict, description="Intent matching hints: {keywords: [...], examples: [...]}")
+    entities_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Schema for entities the Intent LLM should extract for this goal. "
+            "Keys are entity names, values describe type/enum/required. "
+            "Example: {'direction': {'type': 'enum', 'values': ['GAINERS','LOSERS','BOTH'], 'required': true}}"
+        ),
+    )
+
+
+# ─── Intent Layer (Goal-based) ────────────────────────────────
 
 class IntentOutput(BaseModel):
-    """Strict output from Intent Layer."""
+    """Minimal goal-based intent output from the Intent Layer.
+    Intent identifies WHAT the user wants (domain + goal + entities).
+    Never references capabilities or cross-domain relationships.
+    """
     model_config = {"frozen": True}
-    domain: str
-    capability: str
-    confidence: float
-    parameters: dict[str, Any] = Field(default_factory=dict)
-    original_query: str = Field(default="")
+    primary_domain: str = Field(..., description="Target domain, e.g. 'finance', 'communication'")
+    goal: str = Field(..., description="Business goal within the domain, e.g. 'GET_QUOTE', 'SEND_NOTIFICATION'")
+    entities: dict[str, Any] = Field(default_factory=dict, description="Extracted entities from user text (symbols, company names, periods, etc.)")
+    confidence: float = Field(..., description="Extraction confidence 0.0-1.0")
+    original_query: str = Field(default="", description="Raw user input")
+
+    def to_execution_intent(self, resolved_capability: str) -> ExecutionIntent:
+        """Convert to execution-ready intent with a resolved capability."""
+        return ExecutionIntent(
+            domain=self.primary_domain,
+            capability=resolved_capability,
+            confidence=self.confidence,
+            parameters=dict(self.entities),
+            original_query=self.original_query,
+        )
+
+
+class ExecutionIntent(BaseModel):
+    """Resolved intent ready for orchestrator/execution.
+    Produced by the Planner after resolving goal → capability.
+    """
+    model_config = {"frozen": True}
+    domain: str = Field(..., description="Target domain")
+    capability: str = Field(..., description="Resolved capability to execute")
+    confidence: float = Field(..., description="Confidence from original intent")
+    parameters: dict[str, Any] = Field(default_factory=dict, description="Resolved parameters for execution")
+    original_query: str = Field(default="", description="Raw user input")
 
 # ─── Planner Layer (New v3) ────────────────────────────────────
 

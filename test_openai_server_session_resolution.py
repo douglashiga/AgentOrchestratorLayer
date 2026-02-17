@@ -6,7 +6,7 @@ from api.openai_server import (
     _resolve_session_id,
     _should_store_pending_clarification,
 )
-from shared.models import DomainOutput, IntentOutput
+from shared.models import DomainOutput, ExecutionIntent
 
 
 def _message(role: str, content: str) -> dict[str, str]:
@@ -62,7 +62,7 @@ def test_resolve_session_id_accepts_nested_metadata_id() -> None:
 
 
 def test_pending_ambiguous_symbol_clarification_resumes_previous_intent() -> None:
-    original_intent = IntentOutput(
+    original_intent = ExecutionIntent(
         domain="finance",
         capability="get_stock_price",
         confidence=0.99,
@@ -103,7 +103,7 @@ def test_request_messages_to_turn_history_excludes_current_user_message() -> Non
 
 
 def test_pending_clarification_is_extracted_from_combined_plan_steps() -> None:
-    original_intent = IntentOutput(
+    original_intent = ExecutionIntent(
         domain="finance",
         capability="get_stock_price",
         confidence=0.99,

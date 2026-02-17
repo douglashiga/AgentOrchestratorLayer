@@ -23,7 +23,7 @@ from typing import Any, Callable
 from execution.result_combiner import ResultCombiner
 from execution.task_state_store import TaskStateStore
 from orchestrator.orchestrator import Orchestrator
-from shared.models import DomainOutput, ExecutionPlan, ExecutionStep, IntentOutput
+from shared.models import DomainOutput, ExecutionIntent, ExecutionPlan, ExecutionStep, IntentOutput
 from shared.safe_eval import safe_eval_bool
 from shared.workflow_contracts import (
     ClarificationAnswer,
@@ -75,7 +75,7 @@ class ExecutionEngine:
     async def execute_plan(
         self,
         plan: ExecutionPlan,
-        original_intent: IntentOutput,
+        original_intent: IntentOutput | ExecutionIntent,
         progress_callback: ProgressCallback | None = None,
     ) -> DomainOutput:
         """Execute the plan step-by-step."""
@@ -144,7 +144,7 @@ class ExecutionEngine:
     async def execute_method(
         self,
         *,
-        intent: IntentOutput,
+        intent: IntentOutput | ExecutionIntent,
         method_spec: MethodSpec,
         task_id: str | None = None,
         session_id: str | None = None,
@@ -321,7 +321,7 @@ class ExecutionEngine:
         self,
         step: ExecutionStep,
         previous_outputs: dict[int, DomainOutput],
-        original_intent: IntentOutput,
+        original_intent: IntentOutput | ExecutionIntent,
         progress_callback: ProgressCallback | None = None,
     ) -> tuple[int, DomainOutput]:
         """Execute a single step with parameter interpolation."""
@@ -340,7 +340,7 @@ class ExecutionEngine:
                     "depends_on": list(step.depends_on),
                 },
             )
-            step_intent = IntentOutput(
+            step_intent = ExecutionIntent(
                 domain=step.domain or original_intent.domain,
                 capability=step.capability,
                 confidence=original_intent.confidence,
@@ -1145,7 +1145,7 @@ class ExecutionEngine:
             if not action_params:
                 action_params = dict(payload)
 
-            intent = IntentOutput(
+            intent = ExecutionIntent(
                 domain=domain,
                 capability=capability,
                 confidence=1.0,

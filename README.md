@@ -1,328 +1,258 @@
 # Agent Orchestrator Layer
 
-Multi-domain orchestrator with:
-- LLM intent extraction
-- Metadata-driven planning (TaskDecomposer)
-- Optional function-calling planner loop (Semantic-Kernel inspired)
-- Deterministic execution engine (DAG/parallel)
-- Deterministic structured memory store (outside the LLM)
-- Remote domain integration via HTTP (`/manifest`, `/execute`, `/openapi.json`)
+Sistema multi-domínio orientado a goals com intent extraction via LLM, planejamento metadata-driven e execução determinística em DAG.
 
-## Architecture
+## Arquitetura Resumida
+
+```
+User Input
+  ↓ EntryRequest
+Intent Adapter (LLM)
+  ↓ IntentOutput { primary_domain, goal, entities{*_text / enum} }
+Goal Resolver (determinístico)
+  ↓ ExecutionIntent { domain, capability, parameters, confidence }
+Planner Service + Memory
+  ↓ ExecutionPlan { steps[], execution_mode, combine_mode }
+Execution Engine (DAG)
+  ↓ ExecutionIntent (por step)
+Orchestrator (registry lookup)
+  ↓
+Domain Handler
+  ↓ DomainOutput { status, result, explanation }
+```
+
+> Detalhes completos de cada camada e payloads: **[ARCHITECTURE.md](./ARCHITECTURE.md)**
+
+---
+
+## Diagrama
 
 ```mermaid
 graph TD
-    User((User)) --> Entry[Entry Layer]
-    Entry --> Intent[Intent Adapter]
-    Intent --> Planner[Planner Service]
+    User((User)) --> Entry[Entry Layer\nCLI / Telegram / HTTP]
+    Entry --> Intent[Intent Adapter\nLLM → IntentOutput]
+    Intent --> Resolver[Goal Resolver\ngoal → capability]
+    Resolver --> Planner[Planner Service\n+ Memory injection]
     Mem[(Memory Store)] --> Planner
-    Planner --> Decomposer["TaskDecomposer (metadata-driven)"]
-    Planner --> FCPlanner["FunctionCallingPlanner (optional)"]
-    Decomposer --> Exec["Execution Engine (DAG/parallel)"]
+    Planner --> Decomposer[TaskDecomposer\nmetadata-driven]
+    Planner --> FCPlanner[FunctionCallingPlanner\noptional LLM loop]
+    Decomposer --> Exec[Execution Engine\nDAG / parallel]
     FCPlanner --> Exec
-    Exec --> Orch[Orchestrator]
+    Exec --> Orch[Orchestrator\nconfidence gate + routing]
     Orch --> Reg[Registry]
-    Reg --> Fin["Finance Domain (remote_http)"]
-    Reg --> Com["Communication Domain (remote_http)"]
+    Reg --> Fin[Finance Domain\nremote_http :8001]
+    Reg --> Com[Communication Domain\nremote_http :8002]
 ```
 
-## DDD Layer Mapping (Analogy)
+---
 
-This project can be understood with a DDD-style layering:
+## Payloads por Camada
 
-- `Presentation Layer` (how requests enter/leave the system)
-  - `entry/cli.py` (CLI channel)
-  - `entry/telegram.py` (Telegram channel)
-  - `api/openai_server.py` (OpenAI-compatible HTTP API for Open WebUI)
-  - Responsibility: receive input, expose output/streaming, keep transport concerns out of business rules.
-
-- `Application Layer` (orchestration/use-case flow)
-  - `conversation/manager.py`
-  - `intent/adapter.py`
-  - `planner/service.py`
-  - `planner/task_decomposer.py`
-  - `planner/function_calling_planner.py`
-  - `execution/engine.py`
-  - `execution/result_combiner.py`
-  - `orchestrator/orchestrator.py`
-  - Responsibility: execute use-cases end-to-end (intent -> plan -> execute -> combine), without embedding low-level infra details.
-
-- `Domain Layer` (business behavior/rules)
-  - `domains/finance/*`
-  - `domains/general/handler.py`
-  - `shared/models.py` (core contracts/entities for intent/plan/output)
-  - Responsibility: business decisions, validation semantics, deterministic finance/general behavior.
-
-- `Infrastructure Layer` (integration/persistence/adapters)
-  - `models/selector.py` (LLM/Ollama/OpenAI-compatible client calls)
-  - `memory/store.py` (SQLite memory persistence)
-  - `registry/db.py`, `registry/loader.py`, `registry/http_handler.py`, `registry/domain_registry.py`
-  - `skills/*`, `skills/implementations/mcp_adapter.py`
-  - Responsibility: HTTP, DB, external tools, manifests, and all concrete IO integrations.
-
-### Where Agent-Orchestration Components Fit
-
-- `Intent Adapter` -> Application Layer (translates free text into structured intent).
-- `Planner Service` + `TaskDecomposer` + `FunctionCallingPlanner` -> Application Layer (builds executable plan).
-- `Execution Engine` -> Application Layer (runs DAG/sequential steps, dependency control).
-- `Orchestrator` -> Application Layer (routes capability/domain and applies confidence gate).
-- `Domain Handlers` (finance/general) -> Domain Layer (business logic for each bounded context).
-- `Registry + HTTP handlers + ModelSelector + MCP adapter` -> Infrastructure Layer (runtime wiring and external integrations).
-
-## Key Features
-
-- Dynamic domains from DB/bootstrap (no hardcoded finance/communication in orchestrator runtime).
-- Capability discovery from remote manifests.
-- Multi-step composition driven by capability metadata (`metadata.composition`).
-- Function-calling planning loop with strict validation/fallback.
-- Function-calling planner runs only for explicit composition intents (`notify=true` or `compose=true`).
-- Deterministic guardrail: notifier steps are allowed only with explicit `notify=true`.
-- Capability pre-flow engine in finance service (metadata/schema-driven, no method hardcode).
-- Soft confirmation flow for low-confidence intents.
-- Telegram entry channel with per-step JSON debug trace.
-- OpenAI-compatible API for Open WebUI.
-- Streaming support (`stream=true`) with incremental status updates for better UX.
-- Optional general-chat fast-path with real token streaming.
-
-## Generic Engine Contracts
-
-The project now includes generic, domain-agnostic workflow contracts in:
-
-- `shared/workflow_contracts.py`
-
-Core contracts:
-
-- `MethodSpec`: declares a capability method with `input_schema`, `output_schema`, `workflow`, and `policy`.
-- `WorkflowSpec`: declarative graph (`nodes` + `edges`) with validation (unique ids, valid references, DAG no-cycle).
-- `WorkflowNodeSpec`: reusable node types (`transform`, `validate`, `resolve`, `decision`, `human_gate`, `call`, `aggregate`, `return`).
-- `MethodPolicy` / `HumanValidationPolicy`: dynamic gate rules (ambiguity, invalid input, confidence threshold).
-- `TaskInstance`: persisted runtime state for pause/resume.
-- `WorkflowEvent`: canonical event envelope (`task_created`, `clarification_required`, `task_resumed`, etc.).
-
-Runtime support:
-
-- `ExecutionEngine.execute_method(intent, method_spec, ...)` executes declarative workflows.
-- `ExecutionEngine.resume_task(answer)` resumes tasks paused by `human_gate` nodes.
-- `execution/task_state_store.py` persists task snapshots and workflow events in SQLite.
-- Declarative runtime supports DAG batching with parallel execution (`max_concurrency`).
-- Retry/backoff/idempotency are applied from `MethodPolicy` / node-level retry policy.
-- Condition expressions are evaluated by `shared/safe_eval.py` (no raw `eval`).
-- OpenAI API/WebUI flow now supports workflow pause/resume per `session_id`.
-
-## Memory Store (Semantic-Kernel style)
-
-Interface:
+### EntryRequest
 
 ```python
-class MemoryStore:
-    def save(key, value)
-    def get(key)
-    def search(query)
+EntryRequest(
+    session_id="user-abc123",
+    input_text="qual o preço da Nordea?",
+    metadata={}
+)
 ```
 
-Implementation:
-- `memory/store.py` (`SQLiteMemoryStore`)
+### IntentOutput (saída do Intent Adapter)
 
-Planner integration:
-- Memory is read before decomposition.
-- Deterministic fields are injected into intent params when allowed by schema.
-- Memory context is included in planner debug trace.
+O LLM extrai **goal** e **entities human-friendly** — nunca tickers técnicos ou IDs.
 
-Structured memory example:
-
-```json
-{
-  "preferred_market": "sweden",
-  "risk_mode": "moderate",
-  "wheel_active": true,
-  "last_wheel_operation": "2026-02-14: sell_put VALE3.SA",
-  "capital_available": 25000
-}
+```python
+IntentOutput(
+    primary_domain="finance",
+    goal="GET_QUOTE",
+    entities={"symbol_text": "Nordea"},   # nome como o usuário disse
+    confidence=0.95,
+    original_query="qual o preço da Nordea?"
+)
 ```
 
-## Capability Flow Engine (Service-side)
+```python
+# Goal com enum (TOP_MOVERS)
+IntentOutput(
+    primary_domain="finance",
+    goal="TOP_MOVERS",
+    entities={"direction": "GAINERS", "market_text": "Brasil"},
+    confidence=0.92,
+    original_query="maiores altas do Brasil"
+)
+```
 
-The finance service now applies deterministic pre-flows before skill execution, driven by capability metadata (manifest) and schema inference.
+### ExecutionIntent (saída do Goal Resolver)
 
-Supported pre-flow steps:
-- `resolve_symbol`
-- `resolve_symbol_list`
+Mapeamento determinístico `goal + entities → capability`. Sem LLM.
 
-Example metadata (manifest):
+```python
+ExecutionIntent(
+    domain="finance",
+    capability="get_stock_price",          # resolvido pelo GoalResolver
+    parameters={"symbol_text": "Nordea"},  # entities viram parameters
+    confidence=0.95,
+    original_query="qual o preço da Nordea?"
+)
+```
 
-```json
-{
-  "flow": {
-    "pre": [
-      { "type": "resolve_symbol", "param": "symbol", "search_capability": "search_symbol" }
+### ExecutionPlan (saída do Planner)
+
+```python
+ExecutionPlan(
+    execution_mode="dag",
+    combine_mode="report",
+    steps=[
+        ExecutionStep(id=1, capability="get_stock_price",
+                      params={"symbol_text": "Nordea"}, depends_on=[]),
+        ExecutionStep(id=2, capability="send_telegram_message",
+                      params={"message": "${1.explanation}"}, depends_on=[1], required=False)
     ]
-  }
-}
+)
 ```
 
-Fallback behavior when `flow.pre` is not declared:
-- if schema has `symbol` -> auto `resolve_symbol`
-- if schema has `symbols` -> auto `resolve_symbol_list`
+### DomainOutput (saída do Domain Handler)
 
-This keeps flows dynamic and reusable across methods.
+```python
+DomainOutput(
+    status="success",        # "success" | "failure" | "clarification"
+    result={
+        "symbol": "NDA-SE.ST",
+        "price": 112.5,
+        "currency": "SEK",
+        "_market_context": {"market": "SE", "exchange": "OMX"}
+    },
+    explanation="Nordea está em 112.50 SEK",
+    confidence=1.0,
+    metadata={}
+)
+```
 
-## Project Structure
+---
+
+## Estrutura do Projeto
 
 ```text
 AgentOrchestratorLayer/
-├── main.py
-├── docker-compose.yml
-├── domains.bootstrap.json
-├── api/
-│   └── openai_server.py
-├── memory/
-│   ├── __init__.py
-│   └── store.py
+├── main.py                          # Entry CLI + Telegram
+├── api/openai_server.py             # OpenAI-compatible API (Open WebUI)
+│
+├── intent/adapter.py                # LLM → IntentOutput
+│
 ├── planner/
-│   ├── service.py
-│   ├── task_decomposer.py
-│   └── function_calling_planner.py
+│   ├── goal_resolver.py             # IntentOutput → ExecutionIntent (determinístico)
+│   ├── service.py                   # orquestra planner + memória
+│   ├── task_decomposer.py           # metadata-driven step decomposition
+│   └── function_calling_planner.py  # LLM loop opcional
+│
 ├── execution/
-│   ├── engine.py
-│   └── result_combiner.py
-├── orchestrator/
-│   └── orchestrator.py
+│   ├── engine.py                    # DAG executor + workflow runtime
+│   ├── result_combiner.py           # combina outputs dos steps
+│   └── task_state_store.py          # persiste TaskInstance + WorkflowEvent
+│
+├── orchestrator/orchestrator.py     # confidence gate + capability routing
+│
 ├── registry/
-│   ├── db.py
-│   ├── loader.py
-│   ├── domain_registry.py
-│   └── http_handler.py
+│   ├── db.py                        # SQLite: domains, capabilities, goals
+│   ├── loader.py                    # carrega manifests → registry
+│   ├── domain_registry.py           # HandlerRegistry em memória
+│   └── http_handler.py              # handler para domínios remote_http
+│
+├── shared/
+│   ├── models.py                    # todos os Pydantic models
+│   └── workflow_contracts.py        # MethodSpec, WorkflowSpec, TaskInstance
+│
+├── memory/store.py                  # SQLiteMemoryStore
+├── models/selector.py               # ModelSelector (Ollama/OpenAI-compat)
+├── skills/                          # SkillGateway + MCP adapter
+│
 ├── domains/
-│   ├── finance/
-│   └── general/
-├── communication-domain/
-│   └── app/
-└── scripts/
+│   ├── finance/                     # Finance domain (ver domains/finance/README.md)
+│   └── general/handler.py           # General domain (chat)
+│
+├── communication-domain/            # Communication domain (ver communication-domain/README.md)
+│
+├── scripts/                         # scripts de teste e avaliação
+├── domains.bootstrap.json           # bootstrap de domínios
+└── docker-compose.yml
 ```
 
-## Domains
+---
 
-### Finance Domain (remote HTTP)
-- Internal port: `8001`
-- Host port in compose: `8003`
-- Endpoints: `/health`, `/manifest`, `/execute`
+## Domínios
 
-### Communication Domain (remote HTTP)
-- Port: `8002`
-- Endpoints: `/health`, `/manifest`, `/execute`
-- Capabilities:
-  - `send_telegram_message`
-  - `send_telegram_group_message`
+Cada domínio tem seu próprio README com manifest, capabilities e exemplos:
 
-## Configuration
+- **[Finance Domain](./domains/finance/README.md)** — cotações, top movers, screener, histórico
+- **[Communication Domain](./communication-domain/README.md)** — envio via Telegram
 
-### Core Agent env vars
+---
 
-- `OLLAMA_URL` (default `http://localhost:11434`)
-- `MCP_URL` (default `http://localhost:8000/sse`)
-- `MCP_ADAPTER_CALL_TIMEOUT_SECONDS` (default `90`)
-- `DB_PATH` (default `agent.db`)
-- `REGISTRY_DB_PATH` (default `registry.db`)
-- `MEMORY_DB_PATH` (default `memory.db`)
-- `MEMORY_BOOTSTRAP_JSON` (optional)
-- `BOOTSTRAP_DOMAINS_JSON` (optional)
-- `BOOTSTRAP_DOMAINS_FILE` (optional)
-- `AUTO_SYNC_REMOTE_CAPABILITIES` (default `true`)
-- `SEED_CORE_DEFAULTS` (default `true`)
+## Features Principais
 
-### Confidence / Clarification
+- **Goal-based intent:** LLM extrai goal + entities human-friendly; GoalResolver mapeia para capability sem LLM
+- **Metadata-driven decomposition:** decomposição em steps paralelos configurada no manifest, não no código
+- **DAG execution:** steps com dependências explícitas, execução paralela com `max_concurrency`
+- **Workflow declarativo:** `MethodSpec` + `WorkflowSpec` para fluxos com `human_gate`, `decision`, `validate`, `call`, `return`
+- **Pause/resume:** `TaskInstance` persiste estado; `resume_task(ClarificationAnswer)` retoma de onde parou
+- **Memory injection:** memória estruturada (SQLite) injetada no planner antes da decomposição
+- **Symbol resolver:** Finance handler resolve nomes → tickers via alias metadata + `search_symbol` como fallback
+- **Soft confirmation:** intents com `confidence < 0.94` retornam clarification antes de executar
+- **Streaming:** SSE com status updates incrementais; fast-path com token streaming real para chat geral
+- **OpenAI-compatible API:** integração direta com Open WebUI
 
-- `SOFT_CONFIRMATION_ENABLED` (default `true`)
-- `SOFT_CONFIRM_THRESHOLD` (default `0.94`)
-- `ORCHESTRATOR_CONFIDENCE_THRESHOLD` (default from `SOFT_CONFIRM_THRESHOLD`, fallback `0.94`)
+---
 
-### Function-Calling Planner
+## Configuração
 
-- `PLANNER_FUNCTION_CALLING_ENABLED` (default `true`)
-- `PLANNER_FUNCTION_CHOICE_MODE` (`auto|required|none`, default `auto`)
-- `PLANNER_MAX_ITERATIONS` (default `2`)
-- `PLANNER_MODEL` (default `llama3.1:8b`)
-- `PLANNER_TIMEOUT_SECONDS` (default `8`)
-- `PLANNER_INCLUDED_DOMAINS` / `PLANNER_EXCLUDED_DOMAINS`
-- `PLANNER_INCLUDED_CAPABILITIES` / `PLANNER_EXCLUDED_CAPABILITIES`
+### Variáveis principais
 
-### Planner + Memory integration
+```bash
+# LLM / Modelos
+OLLAMA_URL=http://localhost:11434
 
-- `PLANNER_MEMORY_ENABLED` (default `true`)
-- `PLANNER_MEMORY_PARAM_MAP_JSON` (optional JSON map)
-- `PLANNER_MEMORY_ALLOW_WITHOUT_SCHEMA` (default `false`)
+# Domínios remotos
+BOOTSTRAP_DOMAINS_FILE=domains.bootstrap.json
 
-Example `PLANNER_MEMORY_PARAM_MAP_JSON`:
+# Bancos
+DB_PATH=agent.db
+REGISTRY_DB_PATH=registry.db
+MEMORY_DB_PATH=memory.db
 
-```json
-{
-  "preferred_market": "market",
-  "risk_mode": "risk_mode",
-  "wheel_active": "wheel_active",
-  "capital_available": "capital"
-}
+# Confidence
+SOFT_CONFIRM_THRESHOLD=0.94
+
+# Telegram entry
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_DEFAULT_CHAT_ID=...
+
+# OpenAI API
+OPENAI_API_DEBUG_TRACE=false
 ```
 
-### Telegram Entry Channel (agent)
-
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_DEFAULT_CHAT_ID`
-- `TELEGRAM_ENTRY_POLL_TIMEOUT_SECONDS` (default `20`)
-- `TELEGRAM_ENTRY_REQUEST_TIMEOUT_SECONDS` (default `35`)
-- `TELEGRAM_ENTRY_ALLOWED_CHAT_IDS`
-- `TELEGRAM_ENTRY_DEBUG` (default `true`)
-- `TELEGRAM_ENTRY_DEBUG_MAX_CHARS` (default `3200`)
-
-### Communication Domain (telegram sender)
-
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_DEFAULT_CHAT_ID`
-- `TELEGRAM_DRY_RUN` (service default `false`; compose default sets `true`)
-- `TELEGRAM_ALLOWED_CHAT_IDS`
-- `TELEGRAM_TIMEOUT_SECONDS`
-
-### OpenAI-Compatible API / Open WebUI
-
-- `OPENAI_API_DEBUG_TRACE` (default `false`)
-- `OPENAI_API_INCLUDE_SUGGESTIONS` (default `true`)
-- `OPENAI_API_STREAM_STATUS_UPDATES` (default `true`)
-- `OPENAI_API_STREAM_CHUNK_SIZE` (default `160`)
-- `GENERAL_FASTPATH_ENABLED` (default `false`)
-- `OPENAI_API_BASE_URL` (for Open WebUI)
-- `OPENAI_API_KEY` (for Open WebUI)
-
-## Bootstrap Domains
-
-Domains are injected from:
-1. `BOOTSTRAP_DOMAINS_JSON`
-2. `BOOTSTRAP_DOMAINS_FILE`
-
-Example (`domains.bootstrap.json`):
+### Bootstrap de domínios (`domains.bootstrap.json`)
 
 ```json
 [
   {
     "name": "finance",
     "type": "remote_http",
-    "config": {
-      "url": "http://finance-server:8001",
-      "timeout": 90.0
-    },
+    "config": {"url": "http://finance-server:8001", "timeout": 90.0},
     "sync_capabilities": true
   },
   {
     "name": "communication",
     "type": "remote_http",
-    "config": {
-      "url": "http://communication-domain:8002",
-      "timeout": 15.0
-    },
+    "config": {"url": "http://communication-domain:8002", "timeout": 15.0},
     "sync_capabilities": true
   }
 ]
 ```
 
-## Run
+---
+
+## Como Rodar
 
 ### Docker Compose
 
@@ -330,26 +260,20 @@ Example (`domains.bootstrap.json`):
 docker compose up --build
 ```
 
-Services:
-- `finance-server` -> host `:8003` (container `:8001`)
-- `communication-domain` -> host `:8002`
-- `agent` (CLI)
-- `agent-api` -> host `:8010`
-- `open-webui` -> host `:3000`
+Serviços:
+- `finance-server` → host `:8003`
+- `communication-domain` → host `:8002`
+- `agent-api` → host `:8010`
+- `open-webui` → host `:3000`
 
 ### CLI
 
 ```bash
 python3 main.py run
-```
-
-### Telegram Entry
-
-```bash
 python3 main.py run-telegram
 ```
 
-### OpenAI-compatible API
+### API
 
 ```bash
 uvicorn api.openai_server:app --host 0.0.0.0 --port 8010
@@ -358,105 +282,45 @@ uvicorn api.openai_server:app --host 0.0.0.0 --port 8010
 Endpoints:
 - `GET /health`
 - `GET /v1/models`
-- `POST /v1/chat/completions`
+- `POST /v1/chat/completions` (com `stream: true` para SSE)
 
-Streaming:
-- Send `"stream": true` to receive SSE chunks (`chat.completion.chunk`).
-- Normal mode emits early status messages before final content to improve perceived latency.
-- Fast-path mode streams model tokens in real-time for clear general-chat messages.
-
-Model options in Open WebUI:
-- `agent-orchestrator` -> full pipeline (`intent -> planner -> engine -> domain`).
-- `agent-orchestrator-fastpath` -> enables a conservative fast-path for general chat. If the message looks finance/task-oriented, it automatically falls back to full pipeline.
-
-Optional request flag:
-- `x_general_fastpath: true|false` in `/v1/chat/completions` can force on/off behavior per request.
-
-History persistence behavior:
-- Assistant responses are persisted in a clean form (without debug/suggestions blocks) to keep future context smaller and faster.
-- UI response can still include debug and suggestion metadata (`x_openwebui`).
-
-## Admin Commands
-
-### Domains
+### Admin
 
 ```bash
 python3 main.py domain-list
 python3 main.py domain-add finance remote_http '{"url":"http://localhost:8003"}'
 python3 main.py domain-sync finance
-```
-
-### Memory
-
-```bash
 python3 main.py memory-set preferred_market '"SE"'
-python3 main.py memory-set risk_mode '"moderate"' --namespace session:abc123
 python3 main.py memory-get preferred_market
-python3 main.py memory-search market
 ```
 
-## Tests / Validation
+---
 
-### Simple integration scripts
-
-Use `PYTHONPATH=.` to avoid import issues when running from `scripts/`.
+## Testes
 
 ```bash
-PYTHONPATH=. python3 scripts/test_telegram_send_simple.py
-PYTHONPATH=. python3 scripts/test_stock_price_notify_simple.py
-```
-
-### Unit tests
-
-```bash
+# unit tests
 python3 -m pytest -q
+
+# scripts de integração
+PYTHONPATH=. python3 scripts/test_stock_price_notify_simple.py
+PYTHONPATH=. python3 scripts/test_telegram_send_simple.py
+
+# avaliação de capabilities (requer domínios rodando)
+FINANCE_DOMAIN_URL=http://localhost:8003 python3 scripts/evaluate_capabilities.py
 ```
 
-Important:
-- If `pytest` is not installed in your environment, install dependencies first.
-
-### Capability Accuracy (live domains)
-
-Evaluate all remote capabilities from manifests and compute pass rate
-(`success` + `clarification` count as pass):
-
-```bash
-python3 scripts/evaluate_capabilities.py
-```
-
-With explicit URLs/target:
-
-```bash
-FINANCE_DOMAIN_URL=http://localhost:8003 \
-COMMUNICATION_DOMAIN_URL=http://localhost:8002 \
-CAPABILITY_TARGET_PASS_RATE=90 \
-python3 scripts/evaluate_capabilities.py
-```
-
-Optional pytest gate (disabled by default):
-
-```bash
-RUN_LIVE_CAPABILITY_TESTS=1 python3 -m pytest -q test_capability_live_eval.py
-```
+---
 
 ## Troubleshooting
 
-- `Name or service not known` for `finance-server`:
-  - If running outside compose, use `http://localhost:8003` (host port), not `http://finance-server:8001`.
-- Telegram returns no messages and `getUpdates` is empty:
-  - Send at least one message to the bot, then call `getUpdates` again.
-- Many clarification prompts:
-  - Check `SOFT_CONFIRM_THRESHOLD` and `ORCHESTRATOR_CONFIDENCE_THRESHOLD`.
-- Wrong ticker / ambiguous ticker on `get_stock_price`:
-  - The finance handler now runs deterministic `search_symbol` resolution first.
-  - If multiple matches are found, it returns a clarification asking which ticker you mean.
-- Port conflict on `8001`:
-  - Finance host port is already moved to `8003` in compose.
-
-## Notes
-
-- Communication domain is standalone and can be moved to another repository/container.
-- Planner decomposition is metadata-driven; improve domain manifests/capability metadata for better planning quality.
+| Sintoma | Causa provável | Solução |
+|---------|----------------|---------|
+| Muitas clarifications | `SOFT_CONFIRM_THRESHOLD` alto | Reduzir para `0.85` |
+| Ticker errado | LLM inferiu ticker direto | Verificar `entities_schema` do goal |
+| `Name or service not known` para `finance-server` | Fora do compose | Usar `http://localhost:8003` |
+| Telegram não recebe mensagens | Bot sem mensagem inicial | Enviar uma mensagem ao bot primeiro |
+| Port conflict 8001 | Finance usa 8001 interno | Host port é 8003 no compose |
 
 ## License
 

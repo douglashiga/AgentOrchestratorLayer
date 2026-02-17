@@ -98,6 +98,40 @@ def manifest() -> dict[str, Any]:
                 "manda essa resposta no grupo",
             ],
         },
+        "goals": [
+            {
+                "goal": "SEND_NOTIFICATION",
+                "description": "Send a notification or message via Telegram to a user",
+                "capabilities": ["send_telegram_message"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "envie", "manda", "notifique", "telegram",
+                        "enviar mensagem", "mandar no telegram",
+                    ],
+                    "examples": [
+                        "envie no telegram",
+                        "manda essa resposta no telegram",
+                    ],
+                },
+            },
+            {
+                "goal": "SEND_TO_GROUP",
+                "description": "Send a message to a Telegram group or channel",
+                "capabilities": ["send_telegram_group_message"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "grupo", "canal", "compartilhe", "channel",
+                        "mandar no grupo", "enviar no canal",
+                    ],
+                    "examples": [
+                        "manda no grupo",
+                        "compartilhe no canal do telegram",
+                    ],
+                },
+            },
+        ],
         "capabilities": [
             {
                 "name": "send_telegram_message",

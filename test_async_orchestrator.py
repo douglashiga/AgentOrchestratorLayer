@@ -3,7 +3,7 @@ import logging
 from unittest.mock import MagicMock, AsyncMock
 
 from orchestrator.orchestrator import Orchestrator
-from shared.models import IntentOutput, DomainOutput
+from shared.models import ExecutionIntent, DomainOutput
 
 logging.basicConfig(level=logging.INFO)
 
@@ -19,7 +19,7 @@ def test_async_orchestration():
         model_selector = MagicMock()
         orchestrator = Orchestrator(domain_registry=registry, model_selector=model_selector)
 
-        intent = IntentOutput(
+        intent = ExecutionIntent(
             domain="finance",
             capability="test_async",
             confidence=1.0,
