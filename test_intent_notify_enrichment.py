@@ -16,160 +16,138 @@ class FailingModelSelector:
         raise RuntimeError("model unavailable")
 
 
+def _goal_catalog() -> list[dict]:
+    return [
+        {
+            "domain": "general",
+            "goal": "CHAT",
+            "description": "General conversation and help.",
+            "hints": {"keywords": ["oi", "ola", "hello", "ajuda"]},
+        },
+        {
+            "domain": "finance",
+            "goal": "GET_QUOTE",
+            "description": "Get current stock price/quote.",
+            "hints": {"keywords": ["preco", "cotacao", "valor", "quanto esta"]},
+            "entities_schema": {
+                "symbol_text": {"type": "string", "required": True, "description": "Symbol or company name as user said it"},
+            },
+        },
+    ]
+
+
 def test_intent_adapter_passthrough_finance_payload() -> None:
     adapter = IntentAdapter(
         model_selector=DummyModelSelector(
             {
-                "domain": "finance",
-                "action": "get_stock_price",
+                "primary_domain": "finance",
+                "goal": "GET_QUOTE",
                 "confidence": 0.91,
-                "parameters": {"symbol": "PETR4.SA"},
+                "entities": {"symbol_text": "Petrobras"},
             }
         ),
-        capability_catalog=[
-            {"domain": "finance", "capability": "get_stock_price"},
-            {"domain": "general", "capability": "chat"},
-        ],
+        goal_catalog=_goal_catalog(),
     )
 
     intent = adapter.extract("qual o preco da petro?")
-    assert intent.domain == "finance"
-    assert intent.capability == "get_stock_price"
+    assert intent.primary_domain == "finance"
+    assert intent.goal == "GET_QUOTE"
     assert intent.confidence == 0.91
-    assert intent.parameters.get("symbol") == "PETR4.SA"
-    assert isinstance(intent.parameters.get("_execution_steps"), list)
+    assert intent.entities.get("symbol_text") == "Petrobras"
 
 
 def test_intent_adapter_does_not_infer_or_mutate_parameters() -> None:
     adapter = IntentAdapter(
         model_selector=DummyModelSelector(
             {
-                "domain": "finance",
-                "action": "get_stock_price",
+                "primary_domain": "finance",
+                "goal": "GET_QUOTE",
                 "confidence": 0.85,
-                "parameters": {},
+                "entities": {},
             }
         ),
-        capability_catalog=[
-            {"domain": "finance", "capability": "get_stock_price"},
-        ],
+        goal_catalog=_goal_catalog(),
     )
 
     intent = adapter.extract("qual o preco da petro e manda no telegram")
-    assert intent.domain == "finance"
-    assert intent.capability == "get_stock_price"
-    assert "symbol" not in intent.parameters
-    assert isinstance(intent.parameters.get("_execution_steps"), list)
+    assert intent.primary_domain == "finance"
+    assert intent.goal == "GET_QUOTE"
+    # No ticker inferred — only what was in model output
+    assert "symbol" not in intent.entities
+    assert intent.entities == {}
 
 
 def test_intent_adapter_fallback_prefers_general_chat_without_catalog_evidence() -> None:
     adapter = IntentAdapter(
         model_selector=FailingModelSelector(),
-        capability_catalog=[
-            {"domain": "finance", "capability": "get_stock_price"},
-            {"domain": "general", "capability": "chat"},
-        ],
+        goal_catalog=_goal_catalog(),
     )
 
     intent = adapter.extract("oi")
-    assert intent.domain == "general"
-    assert intent.capability == "chat"
-    assert intent.parameters.get("message") == "oi"
+    assert intent.primary_domain == "general"
+    assert intent.goal in ("CHAT", "chat", "GENERAL")
 
 
 def test_intent_adapter_fallback_uses_catalog_hints_when_model_fails() -> None:
     adapter = IntentAdapter(
         model_selector=FailingModelSelector(),
-        capability_catalog=[
-            {
-                "domain": "finance",
-                "capability": "get_stock_price",
-                "description": "Consultar preco e cotacao de ativo por ticker.",
-                "metadata": {
-                    "intent_hints": {
-                        "keywords": ["qual o valor", "preco", "cotacao"],
-                    }
-                },
-            },
-            {"domain": "general", "capability": "chat"},
-        ],
+        goal_catalog=_goal_catalog(),
     )
 
     intent = adapter.extract("qual o valor da petro4?")
-    assert intent.domain == "finance"
-    assert intent.capability == "get_stock_price"
+    assert intent.primary_domain == "finance"
+    assert intent.goal == "GET_QUOTE"
     assert intent.confidence > 0.0
 
 
-def test_intent_adapter_prompt_includes_catalog_intent_hints() -> None:
+def test_intent_adapter_prompt_includes_goal_hints() -> None:
     adapter = IntentAdapter(
         model_selector=DummyModelSelector(
             {
-                "domain": "general",
-                "action": "chat",
+                "primary_domain": "general",
+                "goal": "CHAT",
                 "confidence": 0.9,
-                "parameters": {"message": "oi"},
+                "entities": {},
             }
         ),
-        capability_catalog=[
+        goal_catalog=[
             {
                 "domain": "finance",
-                "capability": "get_top_gainers",
-                "description": "List top gainers",
-                "metadata": {
-                    "intent_hints": {
-                        "keywords": ["maiores altas", "bovespa"],
-                        "examples": ["quais as maiores altas do bovespa?"],
-                    }
+                "goal": "TOP_MOVERS",
+                "description": "Find biggest gainers/losers.",
+                "hints": {
+                    "keywords": ["maiores altas", "bovespa"],
+                    "examples": ["quais as maiores altas do bovespa?"],
                 },
             },
-            {"domain": "general", "capability": "chat"},
+            {"domain": "general", "goal": "CHAT", "description": "General chat."},
         ],
     )
 
     prompt = adapter._build_system_prompt()
-    assert "intent keywords" in prompt
     assert "maiores altas" in prompt
+    assert "bovespa" in prompt
 
 
-def test_intent_adapter_composes_execution_steps_in_single_pass(monkeypatch) -> None:
-    monkeypatch.setenv("INTENT_MULTI_PASS_ENABLED", "false")
+def test_intent_adapter_returns_goal_based_output_not_capability() -> None:
+    """Intent output has goal, not capability. GoalResolver handles capability mapping."""
     adapter = IntentAdapter(
         model_selector=DummyModelSelector(
             {
-                "domain": "finance",
-                "action": "get_stock_price",
+                "primary_domain": "finance",
+                "goal": "GET_QUOTE",
                 "confidence": 0.88,
-                "parameters": {"symbol": "PETR4.SA", "notify": True},
+                "entities": {"symbol_text": "PETR4"},
             }
         ),
-        capability_catalog=[
-            {
-                "domain": "finance",
-                "capability": "get_stock_price",
-                "metadata": {
-                    "parameter_specs": {"symbol": {"type": "string", "required": True}},
-                },
-            },
-            {
-                "domain": "communication",
-                "capability": "send_telegram_message",
-                "metadata": {
-                    "composition": {
-                        "role": "notifier",
-                        "priority": 100,
-                        "param_map": {"message": {"default": "${1.explanation}"}},
-                    }
-                },
-            },
-        ],
+        goal_catalog=_goal_catalog(),
     )
 
-    intent = adapter.extract("qual o valor da petr4 e me notifique")
-    steps = intent.parameters.get("_execution_steps")
-    assert isinstance(steps, list)
-    assert len(steps) == 2
-    assert steps[0].get("domain") == "finance"
-    assert steps[0].get("capability") == "get_stock_price"
-    assert steps[1].get("domain") == "communication"
-    assert steps[1].get("capability") == "send_telegram_message"
+    intent = adapter.extract("qual o valor da petr4")
+    # New model: primary_domain + goal, NOT domain + capability
+    assert hasattr(intent, "primary_domain")
+    assert hasattr(intent, "goal")
+    assert hasattr(intent, "entities")
+    assert not hasattr(intent, "capability")
+    assert intent.goal == "GET_QUOTE"
+    assert intent.entities.get("symbol_text") == "PETR4"

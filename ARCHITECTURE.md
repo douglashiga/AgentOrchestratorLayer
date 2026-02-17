@@ -2,32 +2,32 @@
 
 ## Overview
 
-Sistema multi-domínio orientado a goals (objetivos de negócio). A camada de orquestração é **genérica e metadata-driven**: toda lógica de domínio vive nos **Domain Manifests**, nunca no core do orquestrador.
+Multi-domain system oriented around goals (business objectives). The orchestration layer is **generic and metadata-driven**: all domain logic lives in the **Domain Manifests**, never in the orchestrator core.
 
-**Fluxo principal:**
+**Main flow:**
 
 ```
 User Input
-  → Entry Layer         (normaliza input)
-  → Intent Adapter      (LLM → IntentOutput  com goal + entities)
-  → Goal Resolver       (determinístico: goal → capability)
-  → Planner Service     (injeta memória, decompõe em plano)
-  → Execution Engine    (executa DAG de steps)
-  → Orchestrator        (roteia capability → domain handler)
-  → Domain Handler      (executa, resolve símbolos, retorna DomainOutput)
+  → Entry Layer         (normalizes input)
+  → Intent Adapter      (LLM → IntentOutput  with goal + entities)
+  → Goal Resolver       (deterministic: goal → capability)
+  → Planner Service     (injects memory, decomposes into plan)
+  → Execution Engine    (executes DAG of steps)
+  → Orchestrator        (routes capability → domain handler)
+  → Domain Handler      (executes, resolves symbols, returns DomainOutput)
 ```
 
 ---
 
-## Camadas e Payloads
+## Layers and Payloads
 
 ### 1. Entry Layer
 
-**Arquivo:** `main.py`, `api/openai_server.py`
+**File:** `main.py`, `api/openai_server.py`
 
-**Responsabilidade:** Normalizar qualquer canal (CLI, Telegram, HTTP) em `EntryRequest`.
+**Responsibility:** Normalize any channel (CLI, Telegram, HTTP) into an `EntryRequest`.
 
-**Payload de saída:**
+**Output payload:**
 
 ```python
 EntryRequest(
@@ -41,68 +41,68 @@ EntryRequest(
 
 ### 2. Intent Layer — `intent/adapter.py`
 
-**Responsabilidade:** LLM extrai **goal + entities human-friendly** do texto do usuário. Nunca infere tickers, IDs técnicos, ou job IDs — isso é responsabilidade do domínio.
+**Responsibility:** The LLM extracts **goal + human-friendly entities** from the user's text. It never infers tickers, technical IDs, or job IDs — that is the domain's responsibility.
 
-**O que o LLM vê:** catálogo de domínios/goals + `entities_schema` por goal (quais entidades extrair e em qual formato).
+**What the LLM sees:** domain/goal catalog + `entities_schema` per goal (which entities to extract and in what format).
 
-**Payload de saída — `IntentOutput`:**
+**Output payload — `IntentOutput`:**
 
 ```python
 IntentOutput(
     primary_domain="finance",
     goal="GET_QUOTE",
     entities={
-        "symbol_text": "Nordea"      # nome como o usuário disse — nunca "NDA-SE.ST"
+        "symbol_text": "Nordea"      # name as the user said it — never "NDA-SE.ST"
     },
     confidence=0.95,
     original_query="qual o preço da Nordea?"
 )
 ```
 
-**Exemplo com enum (TOP_MOVERS):**
+**Example with enum (TOP_MOVERS):**
 
 ```python
 IntentOutput(
     primary_domain="finance",
     goal="TOP_MOVERS",
     entities={
-        "direction": "GAINERS",      # valor enum do entities_schema
-        "market_text": "Brasil"      # contexto human-friendly
+        "direction": "GAINERS",      # enum value from entities_schema
+        "market_text": "Brasil"      # human-friendly context
     },
     confidence=0.92,
     original_query="maiores altas do Brasil"
 )
 ```
 
-**Regras:**
-- Chaves `*_text` → strings exatamente como o usuário disse (nome, mercado, período)
-- Chaves enum → valor exato do `entities_schema.values[]`
-- ❌ Nunca: `ticker="NDA-SE.ST"`, `job_id="abc"`, `symbol="PETR4.SA"`
+**Rules:**
+- `*_text` keys → strings exactly as the user said (name, market, period)
+- enum keys → exact value from `entities_schema.values[]`
+- ❌ Never: `ticker="NDA-SE.ST"`, `job_id="abc"`, `symbol="PETR4.SA"`
 
 ---
 
 ### 3. Goal Resolver — `planner/goal_resolver.py`
 
-**Responsabilidade:** Mapeamento **determinístico** `IntentOutput → ExecutionIntent`.
-Usa `entities_schema.capability_map` do manifest para resolver qual capability executar.
+**Responsibility:** **Deterministic** mapping of `IntentOutput → ExecutionIntent`.
+Uses `entities_schema.capability_map` from the manifest to resolve which capability to execute.
 
-**Casos:**
+**Cases:**
 
-| Goal | Entities | Capability resolvida |
+| Goal | Entities | Resolved capability |
 |------|----------|----------------------|
-| `GET_QUOTE` | qualquer | `get_stock_price` (único) |
+| `GET_QUOTE` | any | `get_stock_price` (single) |
 | `TOP_MOVERS` | `direction=GAINERS` | `get_top_gainers` |
 | `TOP_MOVERS` | `direction=LOSERS` | `get_top_losers` |
-| `TOP_MOVERS` | sem direction | `get_top_gainers` (fallback = first) |
+| `TOP_MOVERS` | no direction | `get_top_gainers` (fallback = first) |
 
-**Payload de saída — `ExecutionIntent`:**
+**Output payload — `ExecutionIntent`:**
 
 ```python
 ExecutionIntent(
     domain="finance",
-    capability="get_stock_price",      # capability resolvida deterministicamente
+    capability="get_stock_price",      # capability resolved deterministically
     parameters={
-        "symbol_text": "Nordea"        # entities passadas como parameters
+        "symbol_text": "Nordea"        # entities passed as parameters
     },
     confidence=0.95,
     original_query="qual o preço da Nordea?"
@@ -113,10 +113,10 @@ ExecutionIntent(
 
 ### 4. Planner Service — `planner/service.py`
 
-**Responsabilidade:** Injetar memória, decompor o `ExecutionIntent` em `ExecutionPlan`.
-Pode usar `TaskDecomposer` (determinístico) e opcionalmente `FunctionCallingPlanner` (LLM).
+**Responsibility:** Inject memory, decompose the `ExecutionIntent` into an `ExecutionPlan`.
+Can use `TaskDecomposer` (deterministic) and optionally `FunctionCallingPlanner` (LLM).
 
-**Payload de saída — `ExecutionPlan`:**
+**Output payload — `ExecutionPlan`:**
 
 ```python
 ExecutionPlan(
@@ -137,7 +137,7 @@ ExecutionPlan(
 )
 ```
 
-**Exemplo multi-step (compose/notify):**
+**Multi-step example (compose/notify):**
 
 ```python
 ExecutionPlan(
@@ -154,9 +154,9 @@ ExecutionPlan(
 
 ### 5. Execution Engine — `execution/engine.py`
 
-**Responsabilidade:** Executar o `ExecutionPlan` em DAG. Para cada step, cria um `ExecutionIntent` local e chama o `Orchestrator`.
+**Responsibility:** Execute the `ExecutionPlan` as a DAG. For each step, creates a local `ExecutionIntent` and calls the `Orchestrator`.
 
-**Step intent criado internamente:**
+**Step intent created internally:**
 
 ```python
 ExecutionIntent(
@@ -168,7 +168,7 @@ ExecutionIntent(
 )
 ```
 
-**Payload de saída — `DomainOutput` (combinado):**
+**Output payload — `DomainOutput` (combined):**
 
 ```python
 DomainOutput(
@@ -192,32 +192,32 @@ DomainOutput(
 
 ### 6. Orchestrator — `orchestrator/orchestrator.py`
 
-**Responsabilidade:** Rotear `ExecutionIntent` → handler correto via registry. Aplicar confidence gate.
+**Responsibility:** Route `ExecutionIntent` → correct handler via registry. Apply confidence gate.
 
 **Confidence gate:**
-- Se `confidence < threshold (0.94)` e domínio não é `general` → retorna `clarification`
-- Se confidence ok → chama `handler.execute(intent)`
+- If `confidence < threshold (0.94)` and domain is not `general` → returns `clarification`
+- If confidence is OK → calls `handler.execute(intent)`
 
-**Resolve por:**
-1. `capability` → handler direto (preferencial)
-2. `domain` → handler do domínio (fallback)
+**Resolves by:**
+1. `capability` → direct handler (preferred)
+2. `domain` → domain handler (fallback)
 
 ---
 
 ### 7. Domain Handler — `domains/finance/handler.py`
 
-**Responsabilidade:** Recebe `ExecutionIntent`, resolve entidades human-friendly → técnicas (symbol), executa skill, retorna `DomainOutput`.
+**Responsibility:** Receives `ExecutionIntent`, resolves human-friendly entities → technical ones (symbol), executes skill, returns `DomainOutput`.
 
-**Pre-flow (determinístico):**
+**Pre-flow (deterministic):**
 
 ```
 ExecutionIntent.parameters.symbol_text = "Nordea"
   → SymbolResolver.resolve("NORDEA")
-  → "NDA-SE.ST"                          # alias ou search_symbol
+  → "NDA-SE.ST"                          # alias or search_symbol
   → ExecutionIntent.parameters.symbol = "NDA-SE.ST"
 ```
 
-**Payload de saída — `DomainOutput`:**
+**Output payload — `DomainOutput`:**
 
 ```python
 DomainOutput(
@@ -234,7 +234,7 @@ DomainOutput(
 )
 ```
 
-**Clarification (símbolo ambíguo):**
+**Clarification (ambiguous symbol):**
 
 ```python
 DomainOutput(
@@ -248,7 +248,7 @@ DomainOutput(
 
 ---
 
-## Diagrama de Fluxo Completo
+## Complete Flow Diagram
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -257,8 +257,8 @@ DomainOutput(
                            │
             ┌──────────────▼──────────────┐
             │      INTENT ADAPTER (LLM)   │
-            │  Vê: goal catalog +         │
-            │       entities_schema       │
+            │  Sees: goal catalog +       │
+            │        entities_schema      │
             └──────────────┬──────────────┘
                            │ IntentOutput
                            │ { primary_domain: "finance"
@@ -267,7 +267,7 @@ DomainOutput(
                            │   confidence: 0.95 }
             ┌──────────────▼──────────────┐
             │      GOAL RESOLVER          │
-            │  (determinístico)           │
+            │  (deterministic)            │
             │  GET_QUOTE → get_stock_price│
             └──────────────┬──────────────┘
                            │ ExecutionIntent
@@ -308,14 +308,14 @@ DomainOutput(
 
 ---
 
-## Contracts por Camada
+## Contracts per Layer
 
 ### Goal Manifest (entities_schema)
 
-Cada goal no manifest do domínio declara quais entidades o LLM deve extrair:
+Each goal in the domain manifest declares which entities the LLM should extract:
 
 ```python
-# Exemplo: TOP_MOVERS em domains/finance/server.py
+# Example: TOP_MOVERS in domains/finance/server.py
 "entities_schema": {
     "direction": {
         "type": "enum",
@@ -330,18 +330,18 @@ Cada goal no manifest do domínio declara quais entidades o LLM deve extrair:
     },
     "market_text": {
         "type": "string",
-        "description": "Mercado como o usuário mencionou"
+        "description": "Market as the user mentioned it"
     }
 }
 ```
 
 ```python
-# Exemplo: GET_QUOTE
+# Example: GET_QUOTE
 "entities_schema": {
     "symbol_text": {
         "type": "string",
         "required": True,
-        "description": "Nome/ticker como o usuário disse"
+        "description": "Name/ticker as the user said it"
     }
 }
 ```
@@ -383,81 +383,81 @@ Cada goal no manifest do domínio declara quais entidades o LLM deve extrair:
 
 ---
 
-## Camadas — Responsabilidades e Limites
+## Layers — Responsibilities and Boundaries
 
-| Camada | Extrai/Decide | Nunca faz |
+| Layer | Extracts/Decides | Never does |
 |--------|---------------|-----------|
-| **Intent Adapter** | goal, entities human-friendly | inferir ticker, resolver símbolo |
-| **Goal Resolver** | capability via capability_map | chamar LLM, acessar domínio |
-| **Planner** | ExecutionPlan, injetar memória | lógica de domínio |
-| **Execution Engine** | executa DAG, resolve `${ref}` | regra de negócio |
-| **Orchestrator** | roteia capability → handler | lógica de domínio |
-| **Domain Handler** | resolve entidades, executa skill | chamar outro domínio diretamente |
+| **Intent Adapter** | goal, human-friendly entities | infer ticker, resolve symbol |
+| **Goal Resolver** | capability via capability_map | call LLM, access domain |
+| **Planner** | ExecutionPlan, inject memory | domain logic |
+| **Execution Engine** | execute DAG, resolve `${ref}` | business rules |
+| **Orchestrator** | route capability → handler | domain logic |
+| **Domain Handler** | resolve entities, execute skill | call another domain directly |
 
 ---
 
 ## Anti-Patterns
 
-### ❌ LLM inferindo ticker técnico
+### ❌ LLM inferring a technical ticker
 
 ```python
-# ERRADO — adapter.py
-entities = {"ticker": "NDA-SE.ST"}  # LLM não deve inferir isso
+# WRONG — adapter.py
+entities = {"ticker": "NDA-SE.ST"}  # LLM should not infer this
 
-# CORRETO
-entities = {"symbol_text": "Nordea"}  # human-friendly, domínio resolve
+# CORRECT
+entities = {"symbol_text": "Nordea"}  # human-friendly, domain resolves
 ```
 
-### ❌ Lógica de domínio no decomposer
+### ❌ Domain logic in the decomposer
 
 ```python
-# ERRADO
+# WRONG
 if intent.capability == "get_stock_price":  # hardcoded
     ...
 
-# CORRETO — ler metadata.decomposition
+# CORRECT — read metadata.decomposition
 for rule in capability_metadata["decomposition"]["array_params"]:
     ...
 ```
 
-### ❌ Routing hardcoded no orchestrator
+### ❌ Hardcoded routing in the orchestrator
 
 ```python
-# ERRADO
+# WRONG
 if intent.domain == "finance":
     apply_finance_rules()
 
-# CORRETO — registry resolve via metadata
+# CORRECT — registry resolves via metadata
 handler = self.domain_registry.resolve_capability(intent.capability)
 ```
 
 ---
 
-## Adicionando um Novo Domínio
+## Adding a New Domain
 
-1. Criar `domains/new_domain/` com endpoints `/health`, `/manifest`, `/execute`
-2. Manifest declara: `capabilities[]` + `goals[]` com `entities_schema`
-3. Registrar em `domains.bootstrap.json`
-4. **Zero mudanças** em `intent/`, `planner/`, `execution/`, `orchestrator/`
+1. Create `domains/new_domain/` with endpoints `/health`, `/manifest`, `/execute`
+2. Manifest declares: `capabilities[]` + `goals[]` with `entities_schema`
+3. Register in `domains.bootstrap.json`
+4. **Zero changes** in `intent/`, `planner/`, `execution/`, `orchestrator/`
 
-## Adicionando uma Nova Capability
+## Adding a New Capability
 
-1. Declarar no manifest do domínio
-2. Definir `entities_schema` se o goal mapeia múltiplas capabilities
-3. Implementar handler no domínio
-4. TaskDecomposer/GoalResolver resolvem automaticamente via metadata
+1. Declare it in the domain manifest
+2. Define `entities_schema` if the goal maps to multiple capabilities
+3. Implement the handler in the domain
+4. TaskDecomposer/GoalResolver resolve automatically via metadata
 
 ---
 
-**Arquivos de referência:**
-- Modelos: `shared/models.py`
+**Reference files:**
+- Models: `shared/models.py`
 - Intent: `intent/adapter.py`
 - Resolver: `planner/goal_resolver.py`
 - Planner: `planner/service.py`, `planner/task_decomposer.py`
 - Engine: `execution/engine.py`
-- Orquestrador: `orchestrator/orchestrator.py`
+- Orchestrator: `orchestrator/orchestrator.py`
 - Finance manifest: `domains/finance/server.py`
 - Workflow contracts: `shared/workflow_contracts.py`
 
-**Última atualização:** 2026-02-17
-**Versão:** 2.0 (Goal-based Intent + GoalResolver)
+**Last updated:** 2026-02-17
+**Version:** 2.0 (Goal-based Intent + GoalResolver)

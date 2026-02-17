@@ -1,32 +1,32 @@
 # Finance Domain
 
-Domínio de dados financeiros. Expõe cotações, histórico, screener, top movers, dividendos, opções e dados fundamentalistas via MCP (finance server).
+Financial data domain. Exposes quotes, history, screener, top movers, dividends, options, and fundamental data via MCP (finance server).
 
-- **Porta interna:** `8001`
-- **Porta no compose:** `8003`
-- **Tipo:** `remote_http`
+- **Internal port:** `8001`
+- **Compose port:** `8003`
+- **Type:** `remote_http`
 - **Entry point:** `domains/finance/server.py`
 
 ---
 
 ## Endpoints
 
-| Endpoint | Descrição |
+| Endpoint | Description |
 |----------|-----------|
 | `GET /health` | Health check |
 | `GET /manifest` | Goals + capabilities + metadata |
-| `POST /execute` | Executa uma `ExecutionIntent` |
+| `POST /execute` | Executes an `ExecutionIntent` |
 
 ### `/execute` — Payload
 
 ```python
-# Input (ExecutionIntent serializado)
+# Input (serialized ExecutionIntent)
 {
     "domain": "finance",
     "capability": "get_stock_price",
     "confidence": 0.95,
     "parameters": {
-        "symbol_text": "Nordea"        # ou "symbol": "NDA-SE.ST" se já resolvido
+        "symbol_text": "Nordea"        # or "symbol": "NDA-SE.ST" if already resolved
     },
     "original_query": "qual o preço da Nordea?"
 }
@@ -54,9 +54,9 @@ Domínio de dados financeiros. Expõe cotações, histórico, screener, top move
 
 ---
 
-## Goals e Capabilities
+## Goals and Capabilities
 
-### GET_QUOTE — Cotação atual
+### GET_QUOTE — Current quote
 
 **Capabilities:** `get_stock_price`
 
@@ -64,12 +64,12 @@ Domínio de dados financeiros. Expõe cotações, histórico, screener, top move
 ```python
 {
     "symbol_text": {"type": "string", "required": True,
-                    "description": "Símbolo ou nome da empresa como o usuário disse"},
-    "symbols_text": {"type": "array", "description": "Múltiplos símbolos para comparação"}
+                    "description": "Symbol or company name as the user said it"},
+    "symbols_text": {"type": "array", "description": "Multiple symbols for comparison"}
 }
 ```
 
-**Exemplo de intent:**
+**Intent example:**
 ```python
 IntentOutput(
     primary_domain="finance", goal="GET_QUOTE",
@@ -92,11 +92,11 @@ IntentOutput(
 
 ---
 
-### TOP_MOVERS — Maiores altas/baixas
+### TOP_MOVERS — Biggest gainers/losers
 
 **Capabilities:** `get_top_gainers`, `get_top_losers`
 
-**Entities schema (com capability_map):**
+**Entities schema (with capability_map):**
 ```python
 {
     "direction": {
@@ -115,12 +115,12 @@ IntentOutput(
 }
 ```
 
-**Resolução pelo GoalResolver:**
+**Resolution by GoalResolver:**
 ```
 direction=GAINERS → capability=get_top_gainers
 direction=LOSERS  → capability=get_top_losers
-direction=BOTH    → dois steps paralelos no ExecutionPlan
-sem direction     → fallback: get_top_gainers
+direction=BOTH    → two parallel steps in ExecutionPlan
+no direction      → fallback: get_top_gainers
 ```
 
 **Output:**
@@ -137,7 +137,7 @@ sem direction     → fallback: get_top_gainers
 
 ---
 
-### VIEW_HISTORY — Histórico OHLC
+### VIEW_HISTORY — OHLC History
 
 **Capabilities:** `get_historical_data`
 
@@ -145,8 +145,8 @@ sem direction     → fallback: get_top_gainers
 ```python
 {
     "symbol_text": {"type": "string", "required": True},
-    "period_text":   {"type": "string", "description": "ex: 'ultimo mes', '1 ano', 'ytd'"},
-    "interval_text": {"type": "string", "description": "ex: 'diário', 'semanal'"}
+    "period_text":   {"type": "string", "description": "e.g. 'last month', '1 year', 'ytd'"},
+    "interval_text": {"type": "string", "description": "e.g. 'daily', 'weekly'"}
 }
 ```
 
@@ -164,7 +164,7 @@ sem direction     → fallback: get_top_gainers
 
 ---
 
-### SCREEN_STOCKS — Screener de ações
+### SCREEN_STOCKS — Stock screener
 
 **Capabilities:** `get_stock_screener`
 
@@ -188,11 +188,11 @@ sem direction     → fallback: get_top_gainers
 
 ---
 
-### DIVIDEND_ANALYSIS — Dividendos
+### DIVIDEND_ANALYSIS — Dividends
 
 **Capabilities:** `get_top_dividend_payers`, `get_dividends`
 
-**Entities schema (com capability_map):**
+**Entities schema (with capability_map):**
 ```python
 {
     "focus": {
@@ -210,7 +210,7 @@ sem direction     → fallback: get_top_gainers
 
 ---
 
-### OPTIONS_DATA — Opções
+### OPTIONS_DATA — Options
 
 **Capabilities:** `get_option_chain`, `get_option_greeks`
 
@@ -231,7 +231,7 @@ sem direction     → fallback: get_top_gainers
 
 ---
 
-### TECHNICAL_SCAN — Sinais técnicos
+### TECHNICAL_SCAN — Technical signals
 
 **Capabilities:** `get_technical_signals`
 
@@ -246,7 +246,7 @@ sem direction     → fallback: get_top_gainers
 
 ---
 
-### COMPARE_STOCKS — Comparação fundamentalista
+### COMPARE_STOCKS — Fundamental comparison
 
 **Capabilities:** `compare_fundamentals`
 
@@ -254,39 +254,39 @@ sem direction     → fallback: get_top_gainers
 ```python
 {
     "symbols_text": {"type": "array", "required": True,
-                     "description": "Lista de empresas para comparar"}
+                     "description": "List of companies to compare"}
 }
 ```
 
 ---
 
-### Outros Goals
+### Other Goals
 
-| Goal | Capabilities | Descrição |
+| Goal | Capabilities | Description |
 |------|-------------|-----------|
-| `FUNDAMENTALS` | `get_fundamentals` | Dados fundamentalistas de uma ação |
-| `COMPANY_PROFILE` | `get_company_info` | Perfil e setor da empresa |
-| `FINANCIAL_STATEMENTS` | `get_financial_statements` | DRE, balanço patrimonial |
-| `ACCOUNT_OVERVIEW` | `get_account_summary` | Resumo da conta na corretora |
-| `SEARCH_SYMBOL` | `search_symbol`, `yahoo_search` | Busca de ticker por nome |
-| `PIPELINE_STATUS` | `list_jobs`, `get_job_status` | Status de jobs do pipeline de dados |
+| `FUNDAMENTALS` | `get_fundamentals` | Fundamental data for a stock |
+| `COMPANY_PROFILE` | `get_company_info` | Company profile and sector |
+| `FINANCIAL_STATEMENTS` | `get_financial_statements` | Income statement, balance sheet |
+| `ACCOUNT_OVERVIEW` | `get_account_summary` | Brokerage account summary |
+| `SEARCH_SYMBOL` | `search_symbol`, `yahoo_search` | Search ticker by name |
+| `PIPELINE_STATUS` | `list_jobs`, `get_job_status` | Data pipeline job status |
 
 ---
 
-## Arquitetura Interna
+## Internal Architecture
 
 ```
 ExecutionIntent (capability + parameters)
   │
   ├─ FinanceDomainHandler.execute()
-  │    ├─ _resolve_parameters()        # aplica defaults do manifest
-  │    ├─ get_type_hints() → typed dispatch (ex: get_top_gainers)
+  │    ├─ _resolve_parameters()        # applies manifest defaults
+  │    ├─ get_type_hints() → typed dispatch (e.g. get_top_gainers)
   │    └─ _run_pipeline()
   │         ├─ _apply_pre_flow()       # resolve_symbol / resolve_symbol_list
   │         │    └─ SymbolResolver
-  │         │         ├─ aliases dict  (metadata-driven, ex: NORDEA → NDA-SE.ST)
+  │         │         ├─ aliases dict  (metadata-driven, e.g. NORDEA → NDA-SE.ST)
   │         │         └─ search_symbol (MCP fallback)
-  │         ├─ ContextResolver         # symbol → DomainContext (mercado, moeda, exchange)
+  │         ├─ ContextResolver         # symbol → DomainContext (market, currency, exchange)
   │         ├─ SkillGateway            # → MCP finance server
   │         └─ StrategyCore           # skill data → Decision → DomainOutput
   │
@@ -295,19 +295,19 @@ ExecutionIntent (capability + parameters)
 
 ### Pre-flow: Symbol Resolution
 
-O handler resolve nomes human-friendly → tickers técnicos **antes** de chamar o skill:
+The handler resolves human-friendly names → technical tickers **before** calling the skill:
 
 ```
 parameters.symbol_text = "Nordea"
   → SymbolResolver.resolve("NORDEA")
-  → check aliases dict → "NDA-SE.ST" ✓  (alias determinístico)
+  → check aliases dict → "NDA-SE.ST" ✓  (deterministic alias)
   → (fallback) search_symbol MCP call
-  → (clarification) se ambíguo: retorna candidatos
+  → (clarification) if ambiguous: returns candidates
 ```
 
 ### Context Resolution
 
-Após resolver o símbolo, o `ContextResolver` determina o contexto de mercado:
+After resolving the symbol, the `ContextResolver` determines the market context:
 
 ```python
 DomainContext(
@@ -324,18 +324,18 @@ DomainContext(
 
 ---
 
-## Variáveis de Ambiente
+## Environment Variables
 
-| Variável | Padrão | Descrição |
+| Variable | Default | Description |
 |----------|--------|-----------|
-| `MCP_URL` | `http://localhost:8000/sse` | URL do MCP finance server |
-| `MCP_ADAPTER_CALL_TIMEOUT_SECONDS` | `90` | Timeout de chamadas MCP |
-| `FINANCE_DOMAIN_PORT` | `8001` | Porta do serviço |
-| `SYMBOL_ALIASES_JSON` | — | Override de aliases em JSON |
+| `MCP_URL` | `http://localhost:8000/sse` | MCP finance server URL |
+| `MCP_ADAPTER_CALL_TIMEOUT_SECONDS` | `90` | MCP call timeout |
+| `FINANCE_DOMAIN_PORT` | `8001` | Service port |
+| `SYMBOL_ALIASES_JSON` | — | Alias override in JSON |
 
 ---
 
-## Flows Suportados (pre-flow metadata)
+## Supported Flows (pre-flow metadata)
 
 ```json
 {
@@ -353,20 +353,20 @@ DomainContext(
 }
 ```
 
-Quando `flow.pre` não está declarado, o handler infere automaticamente:
-- campo `symbol` no schema → `resolve_symbol`
-- campo `symbols` no schema → `resolve_symbol_list`
+When `flow.pre` is not declared, the handler infers automatically:
+- `symbol` field in schema → `resolve_symbol`
+- `symbols` field in schema → `resolve_symbol_list`
 
 ---
 
-## Adicionando uma Nova Capability
+## Adding a New Capability
 
-1. Declarar em `DOMAIN_MANIFEST["capabilities"]` em `server.py`
-2. Definir `entities_schema` no goal correspondente (ou criar novo goal)
-3. Implementar método tipado em `handler.py`:
+1. Declare in `DOMAIN_MANIFEST["capabilities"]` in `server.py`
+2. Define `entities_schema` in the corresponding goal (or create a new goal)
+3. Implement a typed method in `handler.py`:
    ```python
    async def nova_capability(self, intent: IntentOutput | ExecutionIntent, params: NovaInput) -> DomainOutput:
        return await self._run_pipeline(intent, params.model_dump())
    ```
-4. Criar schema Pydantic em `schemas.py`
-5. GoalResolver e TaskDecomposer funcionam automaticamente via metadata
+4. Create Pydantic schema in `schemas.py`
+5. GoalResolver and TaskDecomposer work automatically via metadata

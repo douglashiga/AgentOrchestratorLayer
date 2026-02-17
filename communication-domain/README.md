@@ -1,34 +1,34 @@
 # Communication Domain
 
-Domínio de comunicação outbound. Envia mensagens via Telegram para usuários e grupos/canais.
+Outbound communication domain. Sends messages via Telegram to users and groups/channels.
 
-- **Porta:** `8002`
-- **Tipo:** `remote_http`
+- **Port:** `8002`
+- **Type:** `remote_http`
 - **Entry point:** `communication-domain/app/main.py`
-- **Standalone:** pode ser movido para outro repositório/container sem mudanças no orquestrador
+- **Standalone:** can be moved to another repository/container without changes to the orchestrator
 
 ---
 
 ## Endpoints
 
-| Endpoint | Descrição |
+| Endpoint | Description |
 |----------|-----------|
 | `GET /health` | Health check |
 | `GET /manifest` | Goals + capabilities + metadata |
 | `GET /openapi.json` | OpenAPI spec |
-| `POST /execute` | Executa uma `ExecutionIntent` |
+| `POST /execute` | Executes an `ExecutionIntent` |
 
 ### `/execute` — Payload
 
 ```python
-# Input (ExecutionIntent serializado)
+# Input (serialized ExecutionIntent)
 {
     "domain": "communication",
     "capability": "send_telegram_message",
     "confidence": 1.0,
     "parameters": {
         "message": "Nordea está em 112.50 SEK",
-        "chat_id": "123456789"           # opcional se TELEGRAM_DEFAULT_CHAT_ID configurado
+        "chat_id": "123456789"           # optional if TELEGRAM_DEFAULT_CHAT_ID is configured
     },
     "original_query": "manda o preço no telegram"
 }
@@ -49,21 +49,21 @@ Domínio de comunicação outbound. Envia mensagens via Telegram para usuários 
 
 ---
 
-## Goals e Capabilities
+## Goals and Capabilities
 
-### SEND_NOTIFICATION — Mensagem direta
+### SEND_NOTIFICATION — Direct message
 
 **Goal:** `SEND_NOTIFICATION`
 **Capabilities:** `send_telegram_message`
 
-**Parâmetros de execução:**
+**Execution parameters:**
 
-| Parâmetro | Tipo | Obrigatório | Descrição |
+| Parameter | Type | Required | Description |
 |-----------|------|-------------|-----------|
-| `message` | string | ✅ | Texto da mensagem |
-| `chat_id` | string | ❌ | ID do chat. Default: `TELEGRAM_DEFAULT_CHAT_ID` |
+| `message` | string | Yes | Message text |
+| `chat_id` | string | No | Chat ID. Default: `TELEGRAM_DEFAULT_CHAT_ID` |
 
-**Exemplo:**
+**Example:**
 ```python
 ExecutionIntent(
     domain="communication",
@@ -77,26 +77,26 @@ ExecutionIntent(
 
 ---
 
-### SEND_GROUP_MESSAGE — Mensagem para grupo/canal
+### SEND_GROUP_MESSAGE — Message to group/channel
 
 **Goal:** `SEND_GROUP_MESSAGE`
 **Capabilities:** `send_telegram_group_message`
 
-**Parâmetros de execução:**
+**Execution parameters:**
 
-| Parâmetro | Tipo | Obrigatório | Descrição |
+| Parameter | Type | Required | Description |
 |-----------|------|-------------|-----------|
-| `message` | string | ✅ | Texto da mensagem |
-| `group_id` | string | ❌ | ID do grupo/canal. Default: `TELEGRAM_DEFAULT_CHAT_ID` |
-| `chat_id` | string | ❌ | Alias de `group_id` |
+| `message` | string | Yes | Message text |
+| `group_id` | string | No | Group/channel ID. Default: `TELEGRAM_DEFAULT_CHAT_ID` |
+| `chat_id` | string | No | Alias for `group_id` |
 
 ---
 
-## Uso como Notifier (Composition)
+## Usage as Notifier (Composition)
 
-O domínio de comunicação é tipicamente o **step final de notificação** em planos multi-step, adicionado pelo `TaskDecomposer` ou `FunctionCallingPlanner` quando o intent contém `notify=true`.
+The communication domain is typically the **final notification step** in multi-step plans, added by the `TaskDecomposer` or `FunctionCallingPlanner` when the intent contains `notify=true`.
 
-**Exemplo de ExecutionPlan multi-step:**
+**Multi-step ExecutionPlan example:**
 
 ```python
 ExecutionPlan(
@@ -115,7 +115,7 @@ ExecutionPlan(
             domain="communication",
             capability="send_telegram_message",
             params={
-                "message": "${1.explanation}",          # referência ao output do step 1
+                "message": "${1.explanation}",          # reference to step 1 output
                 "chat_id": "${ENV:TELEGRAM_DEFAULT_CHAT_ID}"
             },
             depends_on=[1],
@@ -128,28 +128,28 @@ ExecutionPlan(
 
 ---
 
-## Tratamento de Erros
+## Error Handling
 
-| Situação | Status | Explicação |
+| Situation | Status | Explanation |
 |----------|--------|------------|
-| Mensagem enviada | `success` | `"Mensagem enviada para o chat X."` |
+| Message sent | `success` | `"Mensagem enviada para o chat X."` |
 | `TELEGRAM_DRY_RUN=true` | `success` | `"Dry-run: Telegram message prepared for chat X."` |
-| `chat_id` ausente/inválido | `clarification` | `"Informe um chat_id válido..."` |
-| Chat não autorizado | `clarification` | `"Esse chat_id não está permitido..."` |
-| Token ausente | `clarification` | `"Token do Telegram ausente/inválido..."` |
-| Bot não iniciado no chat | `clarification` | `"Não consegui enviar... inicie o bot no Telegram antes"` |
-| Capability desconhecida | `failure` | `"Unsupported capability: X"` |
+| `chat_id` missing/invalid | `clarification` | `"Informe um chat_id válido..."` |
+| Unauthorized chat | `clarification` | `"Esse chat_id não está permitido..."` |
+| Token missing | `clarification` | `"Token do Telegram ausente/inválido..."` |
+| Bot not started in chat | `clarification` | `"Não consegui enviar... inicie o bot no Telegram antes"` |
+| Unknown capability | `failure` | `"Unsupported capability: X"` |
 
 ---
 
-## Arquitetura Interna
+## Internal Architecture
 
 ```
 ExecutionIntent (capability + parameters)
   │
   ├─ execute(intent)
-  │    ├─ extrair capability, params
-  │    ├─ resolver chat_id (params → ENV fallback)
+  │    ├─ extract capability, params
+  │    ├─ resolve chat_id (params → ENV fallback)
   │    └─ TelegramService.send_message(chat_id, message)
   │         └─ Telegram Bot API
   │
@@ -158,35 +158,35 @@ ExecutionIntent (capability + parameters)
 
 ---
 
-## Variáveis de Ambiente
+## Environment Variables
 
-| Variável | Obrigatória | Descrição |
+| Variable | Required | Description |
 |----------|-------------|-----------|
-| `TELEGRAM_BOT_TOKEN` | ✅ | Token do bot (BotFather) |
-| `TELEGRAM_DEFAULT_CHAT_ID` | ❌ | Chat ID padrão quando não especificado |
-| `TELEGRAM_ALLOWED_CHAT_IDS` | ❌ | Lista de chat IDs permitidos (CSV). Vazio = todos |
-| `TELEGRAM_TIMEOUT_SECONDS` | ❌ | Timeout das chamadas à API (default: `10`) |
-| `TELEGRAM_DRY_RUN` | ❌ | `true` para simular sem enviar (default: `false`; compose: `true`) |
+| `TELEGRAM_BOT_TOKEN` | Yes | Bot token (BotFather) |
+| `TELEGRAM_DEFAULT_CHAT_ID` | No | Default chat ID when not specified |
+| `TELEGRAM_ALLOWED_CHAT_IDS` | No | List of allowed chat IDs (CSV). Empty = all |
+| `TELEGRAM_TIMEOUT_SECONDS` | No | API call timeout (default: `10`) |
+| `TELEGRAM_DRY_RUN` | No | `true` to simulate without sending (default: `false`; compose: `true`) |
 
 ---
 
-## Como Rodar
+## How to Run
 
 ```bash
 pip install -r requirements.txt
 python -m app.main
 ```
 
-Servidor na porta `:8002`.
+Server on port `:8002`.
 
 ---
 
-## Adicionando uma Nova Capability de Comunicação
+## Adding a New Communication Capability
 
-1. Declarar em `DOMAIN_MANIFEST["capabilities"]` e `DOMAIN_MANIFEST["goals"]` em `main.py`
-2. Implementar no `execute()`:
+1. Declare in `DOMAIN_MANIFEST["capabilities"]` and `DOMAIN_MANIFEST["goals"]` in `main.py`
+2. Implement in `execute()`:
    ```python
    elif capability == "nova_capability":
-       # lógica aqui
+       # logic here
    ```
-3. Nenhuma mudança necessária no orquestrador
+3. No changes required in the orchestrator

@@ -1,31 +1,31 @@
 # Agent Orchestrator Layer
 
-Sistema multi-domínio orientado a goals com intent extraction via LLM, planejamento metadata-driven e execução determinística em DAG.
+Multi-domain system oriented around goals, with intent extraction via LLM, metadata-driven planning, and deterministic DAG execution.
 
-## Arquitetura Resumida
+## Architecture Overview
 
 ```
 User Input
   ↓ EntryRequest
 Intent Adapter (LLM)
   ↓ IntentOutput { primary_domain, goal, entities{*_text / enum} }
-Goal Resolver (determinístico)
+Goal Resolver (deterministic)
   ↓ ExecutionIntent { domain, capability, parameters, confidence }
 Planner Service + Memory
   ↓ ExecutionPlan { steps[], execution_mode, combine_mode }
 Execution Engine (DAG)
-  ↓ ExecutionIntent (por step)
+  ↓ ExecutionIntent (per step)
 Orchestrator (registry lookup)
   ↓
 Domain Handler
   ↓ DomainOutput { status, result, explanation }
 ```
 
-> Detalhes completos de cada camada e payloads: **[ARCHITECTURE.md](./ARCHITECTURE.md)**
+> Full details on each layer and payloads: **[ARCHITECTURE.md](./ARCHITECTURE.md)**
 
 ---
 
-## Diagrama
+## Diagram
 
 ```mermaid
 graph TD
@@ -46,7 +46,7 @@ graph TD
 
 ---
 
-## Payloads por Camada
+## Payloads per Layer
 
 ### EntryRequest
 
@@ -58,22 +58,22 @@ EntryRequest(
 )
 ```
 
-### IntentOutput (saída do Intent Adapter)
+### IntentOutput (output of Intent Adapter)
 
-O LLM extrai **goal** e **entities human-friendly** — nunca tickers técnicos ou IDs.
+The LLM extracts the **goal** and **human-friendly entities** — never technical tickers or IDs.
 
 ```python
 IntentOutput(
     primary_domain="finance",
     goal="GET_QUOTE",
-    entities={"symbol_text": "Nordea"},   # nome como o usuário disse
+    entities={"symbol_text": "Nordea"},   # name as the user said it
     confidence=0.95,
     original_query="qual o preço da Nordea?"
 )
 ```
 
 ```python
-# Goal com enum (TOP_MOVERS)
+# Goal with enum (TOP_MOVERS)
 IntentOutput(
     primary_domain="finance",
     goal="TOP_MOVERS",
@@ -83,21 +83,21 @@ IntentOutput(
 )
 ```
 
-### ExecutionIntent (saída do Goal Resolver)
+### ExecutionIntent (output of Goal Resolver)
 
-Mapeamento determinístico `goal + entities → capability`. Sem LLM.
+Deterministic mapping of `goal + entities → capability`. No LLM.
 
 ```python
 ExecutionIntent(
     domain="finance",
-    capability="get_stock_price",          # resolvido pelo GoalResolver
-    parameters={"symbol_text": "Nordea"},  # entities viram parameters
+    capability="get_stock_price",          # resolved by GoalResolver
+    parameters={"symbol_text": "Nordea"},  # entities become parameters
     confidence=0.95,
     original_query="qual o preço da Nordea?"
 )
 ```
 
-### ExecutionPlan (saída do Planner)
+### ExecutionPlan (output of Planner)
 
 ```python
 ExecutionPlan(
@@ -112,7 +112,7 @@ ExecutionPlan(
 )
 ```
 
-### DomainOutput (saída do Domain Handler)
+### DomainOutput (output of Domain Handler)
 
 ```python
 DomainOutput(
@@ -131,7 +131,7 @@ DomainOutput(
 
 ---
 
-## Estrutura do Projeto
+## Project Structure
 
 ```text
 AgentOrchestratorLayer/
@@ -141,26 +141,26 @@ AgentOrchestratorLayer/
 ├── intent/adapter.py                # LLM → IntentOutput
 │
 ├── planner/
-│   ├── goal_resolver.py             # IntentOutput → ExecutionIntent (determinístico)
-│   ├── service.py                   # orquestra planner + memória
+│   ├── goal_resolver.py             # IntentOutput → ExecutionIntent (deterministic)
+│   ├── service.py                   # orchestrates planner + memory
 │   ├── task_decomposer.py           # metadata-driven step decomposition
-│   └── function_calling_planner.py  # LLM loop opcional
+│   └── function_calling_planner.py  # optional LLM loop
 │
 ├── execution/
 │   ├── engine.py                    # DAG executor + workflow runtime
-│   ├── result_combiner.py           # combina outputs dos steps
-│   └── task_state_store.py          # persiste TaskInstance + WorkflowEvent
+│   ├── result_combiner.py           # combines step outputs
+│   └── task_state_store.py          # persists TaskInstance + WorkflowEvent
 │
 ├── orchestrator/orchestrator.py     # confidence gate + capability routing
 │
 ├── registry/
 │   ├── db.py                        # SQLite: domains, capabilities, goals
-│   ├── loader.py                    # carrega manifests → registry
-│   ├── domain_registry.py           # HandlerRegistry em memória
-│   └── http_handler.py              # handler para domínios remote_http
+│   ├── loader.py                    # loads manifests → registry
+│   ├── domain_registry.py           # in-memory HandlerRegistry
+│   └── http_handler.py              # handler for remote_http domains
 │
 ├── shared/
-│   ├── models.py                    # todos os Pydantic models
+│   ├── models.py                    # all Pydantic models
 │   └── workflow_contracts.py        # MethodSpec, WorkflowSpec, TaskInstance
 │
 ├── memory/store.py                  # SQLiteMemoryStore
@@ -168,54 +168,54 @@ AgentOrchestratorLayer/
 ├── skills/                          # SkillGateway + MCP adapter
 │
 ├── domains/
-│   ├── finance/                     # Finance domain (ver domains/finance/README.md)
+│   ├── finance/                     # Finance domain (see domains/finance/README.md)
 │   └── general/handler.py           # General domain (chat)
 │
-├── communication-domain/            # Communication domain (ver communication-domain/README.md)
+├── communication-domain/            # Communication domain (see communication-domain/README.md)
 │
-├── scripts/                         # scripts de teste e avaliação
-├── domains.bootstrap.json           # bootstrap de domínios
+├── scripts/                         # test and evaluation scripts
+├── domains.bootstrap.json           # domain bootstrap configuration
 └── docker-compose.yml
 ```
 
 ---
 
-## Domínios
+## Domains
 
-Cada domínio tem seu próprio README com manifest, capabilities e exemplos:
+Each domain has its own README with manifest, capabilities, and examples:
 
-- **[Finance Domain](./domains/finance/README.md)** — cotações, top movers, screener, histórico
-- **[Communication Domain](./communication-domain/README.md)** — envio via Telegram
-
----
-
-## Features Principais
-
-- **Goal-based intent:** LLM extrai goal + entities human-friendly; GoalResolver mapeia para capability sem LLM
-- **Metadata-driven decomposition:** decomposição em steps paralelos configurada no manifest, não no código
-- **DAG execution:** steps com dependências explícitas, execução paralela com `max_concurrency`
-- **Workflow declarativo:** `MethodSpec` + `WorkflowSpec` para fluxos com `human_gate`, `decision`, `validate`, `call`, `return`
-- **Pause/resume:** `TaskInstance` persiste estado; `resume_task(ClarificationAnswer)` retoma de onde parou
-- **Memory injection:** memória estruturada (SQLite) injetada no planner antes da decomposição
-- **Symbol resolver:** Finance handler resolve nomes → tickers via alias metadata + `search_symbol` como fallback
-- **Soft confirmation:** intents com `confidence < 0.94` retornam clarification antes de executar
-- **Streaming:** SSE com status updates incrementais; fast-path com token streaming real para chat geral
-- **OpenAI-compatible API:** integração direta com Open WebUI
+- **[Finance Domain](./domains/finance/README.md)** — quotes, top movers, screener, history
+- **[Communication Domain](./communication-domain/README.md)** — sending via Telegram
 
 ---
 
-## Configuração
+## Key Features
 
-### Variáveis principais
+- **Goal-based intent:** LLM extracts goal + human-friendly entities; GoalResolver maps to capability without LLM
+- **Metadata-driven decomposition:** decomposition into parallel steps is configured in the manifest, not in code
+- **DAG execution:** steps with explicit dependencies, parallel execution with `max_concurrency`
+- **Declarative workflow:** `MethodSpec` + `WorkflowSpec` for flows with `human_gate`, `decision`, `validate`, `call`, `return`
+- **Pause/resume:** `TaskInstance` persists state; `resume_task(ClarificationAnswer)` resumes from where it left off
+- **Memory injection:** structured memory (SQLite) injected into the planner before decomposition
+- **Symbol resolver:** Finance handler resolves names → tickers via alias metadata + `search_symbol` as fallback
+- **Soft confirmation:** intents with `confidence < 0.94` return a clarification before executing
+- **Streaming:** SSE with incremental status updates; fast-path with real token streaming for general chat
+- **OpenAI-compatible API:** direct integration with Open WebUI
+
+---
+
+## Configuration
+
+### Main variables
 
 ```bash
-# LLM / Modelos
+# LLM / Models
 OLLAMA_URL=http://localhost:11434
 
-# Domínios remotos
+# Remote domains
 BOOTSTRAP_DOMAINS_FILE=domains.bootstrap.json
 
-# Bancos
+# Databases
 DB_PATH=agent.db
 REGISTRY_DB_PATH=registry.db
 MEMORY_DB_PATH=memory.db
@@ -231,7 +231,7 @@ TELEGRAM_DEFAULT_CHAT_ID=...
 OPENAI_API_DEBUG_TRACE=false
 ```
 
-### Bootstrap de domínios (`domains.bootstrap.json`)
+### Domain bootstrap (`domains.bootstrap.json`)
 
 ```json
 [
@@ -252,7 +252,7 @@ OPENAI_API_DEBUG_TRACE=false
 
 ---
 
-## Como Rodar
+## How to Run
 
 ### Docker Compose
 
@@ -260,7 +260,7 @@ OPENAI_API_DEBUG_TRACE=false
 docker compose up --build
 ```
 
-Serviços:
+Services:
 - `finance-server` → host `:8003`
 - `communication-domain` → host `:8002`
 - `agent-api` → host `:8010`
@@ -282,7 +282,7 @@ uvicorn api.openai_server:app --host 0.0.0.0 --port 8010
 Endpoints:
 - `GET /health`
 - `GET /v1/models`
-- `POST /v1/chat/completions` (com `stream: true` para SSE)
+- `POST /v1/chat/completions` (with `stream: true` for SSE)
 
 ### Admin
 
@@ -296,17 +296,17 @@ python3 main.py memory-get preferred_market
 
 ---
 
-## Testes
+## Tests
 
 ```bash
 # unit tests
 python3 -m pytest -q
 
-# scripts de integração
+# integration scripts
 PYTHONPATH=. python3 scripts/test_stock_price_notify_simple.py
 PYTHONPATH=. python3 scripts/test_telegram_send_simple.py
 
-# avaliação de capabilities (requer domínios rodando)
+# capability evaluation (requires domains running)
 FINANCE_DOMAIN_URL=http://localhost:8003 python3 scripts/evaluate_capabilities.py
 ```
 
@@ -314,13 +314,13 @@ FINANCE_DOMAIN_URL=http://localhost:8003 python3 scripts/evaluate_capabilities.p
 
 ## Troubleshooting
 
-| Sintoma | Causa provável | Solução |
-|---------|----------------|---------|
-| Muitas clarifications | `SOFT_CONFIRM_THRESHOLD` alto | Reduzir para `0.85` |
-| Ticker errado | LLM inferiu ticker direto | Verificar `entities_schema` do goal |
-| `Name or service not known` para `finance-server` | Fora do compose | Usar `http://localhost:8003` |
-| Telegram não recebe mensagens | Bot sem mensagem inicial | Enviar uma mensagem ao bot primeiro |
-| Port conflict 8001 | Finance usa 8001 interno | Host port é 8003 no compose |
+| Symptom | Likely cause | Solution |
+|---------|--------------|---------|
+| Too many clarifications | `SOFT_CONFIRM_THRESHOLD` too high | Lower to `0.85` |
+| Wrong ticker | LLM inferred ticker directly | Check goal's `entities_schema` |
+| `Name or service not known` for `finance-server` | Running outside compose | Use `http://localhost:8003` |
+| Telegram not receiving messages | Bot has no initial message | Send a message to the bot first |
+| Port conflict 8001 | Finance uses 8001 internally | Host port is 8003 in compose |
 
 ## License
 

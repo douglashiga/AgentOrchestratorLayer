@@ -1,100 +1,110 @@
 [
   {
     "question": "qual o valor da petro",
-    "prompt_contains": ["action 'get_stock_price'"],
+    "prompt_contains": ["goal 'GET_QUOTE'"],
     "expected": {
-      "intent_domain": "finance",
-      "intent_capability": "get_stock_price",
+      "intent_primary_domain": "finance",
+      "intent_goal": "GET_QUOTE",
+      "resolved_capability": "get_stock_price",
       "plan_min_steps": 1,
       "plan_contains_step_capabilities": ["get_stock_price"]
     }
   },
   {
     "question": "compare fundamentos",
-    "prompt_contains": ["action 'compare_fundamentals'"],
+    "prompt_contains": ["goal 'COMPARE_STOCKS'"],
     "expected": {
-      "intent_domain": "finance",
-      "intent_capability": "compare_fundamentals",
+      "intent_primary_domain": "finance",
+      "intent_goal": "COMPARE_STOCKS",
+      "resolved_capability": "compare_fundamentals",
       "plan_min_steps": 1,
       "plan_contains_step_capabilities": ["compare_fundamentals"]
     }
   },
   {
     "question": "qual o valor da vale3 e petro4",
-    "prompt_contains": ["action 'get_stock_price'"],
+    "prompt_contains": ["goal 'GET_QUOTE'"],
     "expected": {
-      "intent_domain": "finance",
-      "intent_capability": "get_stock_price",
+      "intent_primary_domain": "finance",
+      "intent_goal": "GET_QUOTE",
+      "resolved_capability": "get_stock_price",
       "plan_min_steps": 1,
       "plan_contains_step_capabilities": ["get_stock_price"]
     }
   },
   {
     "question": "qual o valor da vale3 e abc",
-    "prompt_contains": ["action 'get_stock_price'"],
+    "prompt_contains": ["goal 'GET_QUOTE'"],
     "expected": {
-      "intent_domain": "finance",
-      "intent_capability": "get_stock_price",
+      "intent_primary_domain": "finance",
+      "intent_goal": "GET_QUOTE",
+      "resolved_capability": "get_stock_price",
       "plan_min_steps": 1,
       "plan_contains_step_capabilities": ["get_stock_price"]
     }
   },
   {
     "question": "qual o valor da vale3, petr4 e itub4",
-    "prompt_contains": ["action 'get_stock_price'"],
+    "prompt_contains": ["goal 'GET_QUOTE'"],
     "expected": {
-      "intent_domain": "finance",
-      "intent_capability": "get_stock_price",
+      "intent_primary_domain": "finance",
+      "intent_goal": "GET_QUOTE",
+      "resolved_capability": "get_stock_price",
       "plan_min_steps": 1,
       "plan_contains_step_capabilities": ["get_stock_price"]
     }
   },
   {
     "question": "qual o valor da vale3, petr4, bbas3 e itub4",
-    "prompt_contains": ["action 'get_stock_price'"],
+    "prompt_contains": ["goal 'GET_QUOTE'"],
     "expected": {
-      "intent_domain": "finance",
-      "intent_capability": "get_stock_price",
+      "intent_primary_domain": "finance",
+      "intent_goal": "GET_QUOTE",
+      "resolved_capability": "get_stock_price",
       "plan_min_steps": 1,
       "plan_contains_step_capabilities": ["get_stock_price"]
     }
   },
   {
     "question": "qual o valor da acao da nordea na bolsa da suecia",
-    "prompt_contains": ["action 'get_stock_price'"],
+    "prompt_contains": ["goal 'GET_QUOTE'"],
     "expected": {
-      "intent_domain": "finance",
-      "intent_capability": "get_stock_price",
+      "intent_primary_domain": "finance",
+      "intent_goal": "GET_QUOTE",
+      "resolved_capability": "get_stock_price",
       "plan_min_steps": 1,
       "plan_contains_step_capabilities": ["get_stock_price"]
     }
   },
   {
     "question": "qual o valor da petro e manda no telegram",
-    "prompt_contains": ["action 'get_stock_price'", "action 'send_telegram_message'"],
+    "prompt_contains": ["goal 'GET_QUOTE'"],
     "expected": {
-      "intent_domain": "finance",
-      "intent_capability": "get_stock_price",
+      "intent_primary_domain": "finance",
+      "intent_goal": "GET_QUOTE",
+      "resolved_capability": "get_stock_price",
       "plan_min_steps": 1,
       "plan_contains_step_capabilities": ["get_stock_price"]
     }
   },
   {
     "question": "qual o valor da vale3 e petro4 e manda no telegram",
-    "prompt_contains": ["action 'get_stock_price'", "action 'send_telegram_message'"],
+    "prompt_contains": ["goal 'GET_QUOTE'"],
     "expected": {
-      "intent_domain": "finance",
-      "intent_capability": "get_stock_price",
+      "intent_primary_domain": "finance",
+      "intent_goal": "GET_QUOTE",
+      "resolved_capability": "get_stock_price",
       "plan_min_steps": 1,
       "plan_contains_step_capabilities": ["get_stock_price"]
     }
   },
   {
     "question": "faz deploy do meu kubernetes em producao",
-    "prompt_contains": ["action 'chat'"],
+    "prompt_contains": ["goal 'CHAT'"],
     "expected": {
-      "intent_domain": "general",
-      "intent_capability": "chat",
+      "intent_primary_domain": "general",
+      "intent_goal": "CHAT",
+      "resolved_capability": "chat",
       "plan_min_steps": 1,
       "plan_contains_step_capabilities": ["chat"]
     }

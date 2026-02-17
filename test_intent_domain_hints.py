@@ -12,179 +12,142 @@ class SequenceModelSelector:
         self.calls += 1
         if self._payloads:
             return self._payloads.pop(0)
-        return {"domain": "general", "action": "chat", "confidence": 0.0, "parameters": {}}
+        return {"primary_domain": "general", "goal": "CHAT", "confidence": 0.0, "entities": {}}
 
 
-def test_intent_multi_pass_uses_domain_and_capability_hints_with_obvious_params() -> None:
+def _goal_catalog() -> list[dict]:
+    return [
+        {"domain": "general", "goal": "CHAT", "description": "General chat."},
+        {
+            "domain": "finance",
+            "goal": "GET_QUOTE",
+            "description": "Get current stock price/quote.",
+            "domain_description": "Market and stock data domain.",
+            "domain_hints": {
+                "keywords": ["bolsa", "acoes", "cotacao"],
+            },
+            "hints": {
+                "keywords": ["preco", "cotacao", "quanto esta"],
+                "examples": ["qual o preco da petro?"],
+            },
+            "entities_schema": {
+                "symbol_text": {"type": "string", "required": True},
+            },
+        },
+        {
+            "domain": "finance",
+            "goal": "TOP_MOVERS",
+            "description": "Find biggest gainers or losers.",
+            "domain_description": "Market and stock data domain.",
+            "domain_hints": {
+                "keywords": ["bolsa", "acoes", "cotacao"],
+            },
+            "hints": {
+                "keywords": ["maiores altas", "maiores baixas", "top gainers"],
+                "examples": ["quais as maiores altas do bovespa?"],
+            },
+            "entities_schema": {
+                "direction": {
+                    "type": "enum",
+                    "values": ["GAINERS", "LOSERS", "BOTH"],
+                    "required": True,
+                    "default": "BOTH",
+                    "capability_map": {
+                        "GAINERS": "get_top_gainers",
+                        "LOSERS": "get_top_losers",
+                        "BOTH": ["get_top_gainers", "get_top_losers"],
+                    },
+                },
+                "market_text": {"type": "string"},
+            },
+        },
+    ]
+
+
+def test_intent_extracts_goal_with_enum_entity() -> None:
     selector = SequenceModelSelector(
         [
             {
-                "relevant_domains": [{"domain": "finance", "confidence": 0.93}],
-                "relevant_capabilities": [
-                    {"domain": "finance", "action": "get_top_gainers", "confidence": 0.91}
-                ],
-                "obvious_parameters": {"market": "bovespa"},
-            },
-            {
-                "domain": "finance",
-                "action": "get_top_gainers",
+                "primary_domain": "finance",
+                "goal": "TOP_MOVERS",
                 "confidence": 0.88,
-                "parameters": {},
-            },
+                "entities": {"direction": "GAINERS", "market_text": "bovespa"},
+            }
         ]
     )
-    adapter = IntentAdapter(
-        model_selector=selector,
-        capability_catalog=[
-            {"domain": "general", "capability": "chat", "description": "General chat."},
-            {
-                "domain": "finance",
-                "capability": "get_top_gainers",
-                "description": "Top gainers in a market.",
-                "metadata": {
-                    "domain_description": "Market and stock data domain.",
-                    "domain_intent_hints": {
-                        "keywords": ["bolsa", "acoes", "cotacao"],
-                    },
-                    "intent_hints": {
-                        "keywords": ["maiores altas", "top gainers"],
-                    },
-                    "parameter_specs": {
-                        "market": {
-                            "type": "string",
-                            "normalization": {"case": "upper"},
-                            "aliases": {"BOVESPA": "BR", "IBOVESPA": "BR"},
-                            "required": True,
-                        }
-                    },
-                },
-            },
-        ],
-    )
+    adapter = IntentAdapter(model_selector=selector, goal_catalog=_goal_catalog())
 
     intent = adapter.extract("quais as maiores altas de hoje do bovespa?")
-    assert selector.calls >= 2
-    assert intent.domain == "finance"
-    assert intent.capability == "get_top_gainers"
-    assert intent.parameters.get("market") == "BR"
+    assert intent.primary_domain == "finance"
+    assert intent.goal == "TOP_MOVERS"
+    assert intent.entities.get("direction") == "GAINERS"
+    assert intent.entities.get("market_text") == "bovespa"
 
 
-def test_system_prompt_renders_domain_intent_hints() -> None:
+def test_system_prompt_renders_domain_and_goal_hints() -> None:
     selector = SequenceModelSelector(
-        [{"domain": "general", "action": "chat", "confidence": 0.9, "parameters": {"message": "oi"}}]
+        [{"primary_domain": "general", "goal": "CHAT", "confidence": 0.9, "entities": {}}]
     )
     adapter = IntentAdapter(
         model_selector=selector,
-        capability_catalog=[
-            {
-                "domain": "finance",
-                "capability": "get_stock_price",
-                "description": "Get stock quote.",
-                "metadata": {
-                    "domain_description": "Market and quotes domain.",
-                    "domain_intent_hints": {
-                        "keywords": ["preco", "cotacao", "bolsa"],
-                        "examples": ["qual o valor da petr4?"],
-                    },
-                    "intent_hints": {
-                        "keywords": ["qual o preco", "cotacao"],
-                    },
-                },
-            },
-            {"domain": "general", "capability": "chat", "description": "General chat."},
-        ],
+        goal_catalog=_goal_catalog(),
     )
 
     prompt = adapter._build_system_prompt()
-    assert "domain intent keywords" in prompt
-    assert "preco" in prompt
+    # Domain description should appear
+    assert "Market and stock data domain" in prompt
+    # Goal-level keywords should appear
+    assert "maiores altas" in prompt
 
 
-def test_intent_multi_pass_composes_execution_steps_for_next_stage() -> None:
+def test_intent_extracts_entities_for_notification_flow() -> None:
     selector = SequenceModelSelector(
         [
             {
-                "relevant_domains": [{"domain": "finance", "confidence": 0.9}],
-                "relevant_capabilities": [
-                    {"domain": "finance", "action": "get_stock_price", "confidence": 0.9}
-                ],
-                "obvious_parameters": {"symbol": "PETR4.SA", "notify": True},
-            },
-            {
-                "domain": "finance",
-                "action": "get_stock_price",
+                "primary_domain": "finance",
+                "goal": "GET_QUOTE",
                 "confidence": 0.9,
-                "parameters": {"symbol": "PETR4.SA", "notify": True},
-            },
+                "entities": {"symbol_text": "PETR4", "notify": True},
+            }
         ]
     )
     adapter = IntentAdapter(
         model_selector=selector,
-        capability_catalog=[
-            {
-                "domain": "finance",
-                "capability": "get_stock_price",
-                "description": "Get stock quote.",
-                "metadata": {
-                    "intent_hints": {"keywords": ["preco", "cotacao"]},
-                    "parameter_specs": {"symbol": {"type": "string", "required": True}},
-                },
-            },
-            {
-                "domain": "communication",
-                "capability": "send_telegram_message",
-                "description": "Send to Telegram.",
-                "metadata": {
-                    "composition": {
-                        "role": "notifier",
-                        "priority": 100,
-                        "param_map": {
-                            "message": {"default": "${1.explanation}"},
-                        },
-                    }
-                },
-            },
-        ],
+        goal_catalog=_goal_catalog(),
     )
 
     intent = adapter.extract("qual o valor da petr4 e envie no telegram")
-    steps = intent.parameters.get("_execution_steps")
-    assert isinstance(steps, list)
-    assert len(steps) == 2
-    assert steps[0].get("capability") == "get_stock_price"
-    assert steps[1].get("capability") == "send_telegram_message"
+    assert intent.primary_domain == "finance"
+    assert intent.goal == "GET_QUOTE"
+    assert intent.entities.get("symbol_text") == "PETR4"
+    assert intent.entities.get("notify") is True
 
 
-def test_capability_shortlist_prioritizes_specific_hints_over_domain_hints() -> None:
-    selector = SequenceModelSelector([])
-    adapter = IntentAdapter(
-        model_selector=selector,
-        capability_catalog=[
-            {
-                "domain": "finance",
-                "capability": "get_stock_price",
-                "description": "Get current stock quote.",
-                "metadata": {
-                    "intent_hints": {"keywords": ["qual o valor", "cotacao"]},
-                    "domain_intent_hints": {"keywords": ["bovespa", "ibov"]},
-                },
-            },
-            {
-                "domain": "finance",
-                "capability": "get_top_gainers",
-                "description": "List top gainers in a market.",
-                "metadata": {
-                    "intent_hints": {"keywords": ["maiores ganhos", "maiores altas", "top gainers"]},
-                    "domain_intent_hints": {"keywords": ["bovespa", "ibov"]},
-                },
-            },
-        ],
-    )
+def test_fallback_scores_goal_hints_for_domain_routing() -> None:
+    """When model fails, fallback uses goal hint scoring to choose domain."""
+    from intent.adapter import IntentAdapter as Adapter
 
-    shortlist = adapter._build_capability_shortlist(
-        analysis_payload={"relevant_domains": [{"domain": "finance", "confidence": 0.9}]},
-        input_text="quais os maiores ganhos do bovespa hoje?",
-    )
-    assert isinstance(shortlist, list)
-    assert shortlist
-    assert shortlist[0].get("action") == "get_top_gainers"
+    class AlwaysFailSelector:
+        def generate(self, messages, policy, session_id=None):
+            raise RuntimeError("model down")
+
+    catalog = [
+        {
+            "domain": "finance",
+            "goal": "TOP_MOVERS",
+            "description": "Biggest gainers and losers.",
+            "hints": {"keywords": ["maiores ganhos", "maiores altas", "top gainers"]},
+        },
+        {
+            "domain": "general",
+            "goal": "CHAT",
+            "description": "General conversation.",
+            "hints": {"keywords": ["oi", "ola", "ajuda"]},
+        },
+    ]
+
+    adapter = Adapter(model_selector=AlwaysFailSelector(), goal_catalog=catalog)
+    intent = adapter.extract("quais os maiores ganhos do bovespa hoje?")
+    # Should route to finance domain based on keyword matching
+    assert intent.primary_domain == "finance"
+    assert intent.goal == "TOP_MOVERS"
