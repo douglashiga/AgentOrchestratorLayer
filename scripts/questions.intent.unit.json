@@ -11,14 +11,14 @@
     }
   },
   {
-    "question": "compare fundamentos",
-    "prompt_contains": ["goal 'COMPARE_STOCKS'"],
+    "question": "wheel put candidates para nordea",
+    "prompt_contains": ["goal 'WHEEL_PUT_SCAN'"],
     "expected": {
       "intent_primary_domain": "finance",
-      "intent_goal": "COMPARE_STOCKS",
-      "resolved_capability": "compare_fundamentals",
+      "intent_goal": "WHEEL_PUT_SCAN",
+      "resolved_capability": "get_wheel_put_candidates",
       "plan_min_steps": 1,
-      "plan_contains_step_capabilities": ["compare_fundamentals"]
+      "plan_contains_step_capabilities": ["get_wheel_put_candidates"]
     }
   },
   {

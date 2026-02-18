@@ -24,7 +24,13 @@ from skills.gateway import SkillGateway
 from domains.finance.schemas import (
     TopGainersInput, TopLosersInput, StockPriceInput,
     HistoricalDataInput, StockScreenerInput,
-    TechnicalSignalsInput, CompareFundamentalsInput
+    TechnicalSignalsInput, DividendHistoryInput,
+    MostActiveInput, OversoldOverboughtInput,
+    AnalystRecommendationsInput, TechnicalAnalysisInput,
+    NewsSentimentInput, ComprehensiveStockInfoInput,
+    WheelPutCandidatesInput, WheelPutReturnInput,
+    WheelCoveredCallCandidatesInput, WheelContractCapacityInput,
+    WheelMultiStockPlanInput, WheelPutRiskInput,
 )
 from pydantic import ValidationError
 from typing import get_type_hints
@@ -148,8 +154,56 @@ class FinanceDomainHandler:
 
     async def get_technical_signals(self, intent: IntentOutput | ExecutionIntent, params: TechnicalSignalsInput) -> DomainOutput:
         return await self._run_pipeline(intent, params.model_dump())
-        
-    async def compare_fundamentals(self, intent: IntentOutput | ExecutionIntent, params: CompareFundamentalsInput) -> DomainOutput:
+
+    async def get_dividend_history(self, intent: IntentOutput | ExecutionIntent, params: DividendHistoryInput) -> DomainOutput:
+        return await self._run_pipeline(intent, params.model_dump())
+
+    async def get_company_profile(self, intent: IntentOutput | ExecutionIntent, params: StockPriceInput) -> DomainOutput:
+        return await self._run_pipeline(intent, params.model_dump())
+
+    # ─── Expanded Screeners ───────────────────────────────────────────
+
+    async def get_most_active_stocks(self, intent: IntentOutput | ExecutionIntent, params: MostActiveInput) -> DomainOutput:
+        return await self._run_pipeline(intent, params.model_dump())
+
+    async def get_oversold_stocks(self, intent: IntentOutput | ExecutionIntent, params: OversoldOverboughtInput) -> DomainOutput:
+        return await self._run_pipeline(intent, params.model_dump())
+
+    async def get_overbought_stocks(self, intent: IntentOutput | ExecutionIntent, params: OversoldOverboughtInput) -> DomainOutput:
+        return await self._run_pipeline(intent, params.model_dump())
+
+    # ─── Fundamentals Intelligence ────────────────────────────────────
+
+    async def get_analyst_recommendations(self, intent: IntentOutput | ExecutionIntent, params: AnalystRecommendationsInput) -> DomainOutput:
+        return await self._run_pipeline(intent, params.model_dump())
+
+    async def get_technical_analysis(self, intent: IntentOutput | ExecutionIntent, params: TechnicalAnalysisInput) -> DomainOutput:
+        return await self._run_pipeline(intent, params.model_dump())
+
+    async def get_news_sentiment(self, intent: IntentOutput | ExecutionIntent, params: NewsSentimentInput) -> DomainOutput:
+        return await self._run_pipeline(intent, params.model_dump())
+
+    async def get_comprehensive_stock_info(self, intent: IntentOutput | ExecutionIntent, params: ComprehensiveStockInfoInput) -> DomainOutput:
+        return await self._run_pipeline(intent, params.model_dump())
+
+    # ─── Wheel Strategy ───────────────────────────────────────────────
+
+    async def get_wheel_put_candidates(self, intent: IntentOutput | ExecutionIntent, params: WheelPutCandidatesInput) -> DomainOutput:
+        return await self._run_pipeline(intent, params.model_dump())
+
+    async def get_wheel_put_return(self, intent: IntentOutput | ExecutionIntent, params: WheelPutReturnInput) -> DomainOutput:
+        return await self._run_pipeline(intent, params.model_dump())
+
+    async def get_wheel_covered_call_candidates(self, intent: IntentOutput | ExecutionIntent, params: WheelCoveredCallCandidatesInput) -> DomainOutput:
+        return await self._run_pipeline(intent, params.model_dump())
+
+    async def get_wheel_contract_capacity(self, intent: IntentOutput | ExecutionIntent, params: WheelContractCapacityInput) -> DomainOutput:
+        return await self._run_pipeline(intent, params.model_dump())
+
+    async def build_wheel_multi_stock_plan(self, intent: IntentOutput | ExecutionIntent, params: WheelMultiStockPlanInput) -> DomainOutput:
+        return await self._run_pipeline(intent, params.model_dump())
+
+    async def analyze_wheel_put_risk(self, intent: IntentOutput | ExecutionIntent, params: WheelPutRiskInput) -> DomainOutput:
         return await self._run_pipeline(intent, params.model_dump())
 
     # ─── Unified Execution Pipeline ──────────────────────────────────
@@ -481,6 +535,11 @@ class FinanceDomainHandler:
     ) -> dict[str, Any] | DomainOutput:
         field = str(step.get("param", "symbol")).strip() or "symbol"
         raw_value = params.get(field)
+        # Decomposer splits symbols_text -> symbol_text per step,
+        # but the flow expects "symbol". Bridge the naming gap.
+        if raw_value in (None, ""):
+            text_field = f"{field}_text"
+            raw_value = params.get(text_field)
         if raw_value in (None, ""):
             inferred = self._infer_symbol_from_query_text(original_query)
             if inferred:

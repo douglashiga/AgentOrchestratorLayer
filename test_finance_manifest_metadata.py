@@ -19,17 +19,15 @@ class _FakeMCPAdapter:
                 },
             },
             {
-                "name": "compare_fundamentals",
-                "description": "raw compare tool",
+                "name": "get_wheel_put_candidates",
+                "description": "raw wheel put candidates tool",
                 "schema": {
                     "type": "object",
                     "properties": {
-                        "symbols": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                        }
+                        "symbol": {"type": "string"},
+                        "market": {"type": "string", "default": "sweden"},
                     },
-                    "required": ["symbols"],
+                    "required": ["symbol"],
                 },
             },
         ]
@@ -67,15 +65,15 @@ def test_finance_manifest_enriches_stock_price_metadata(monkeypatch) -> None:
     assert "fundamentos" in domain_hints.get("keywords", [])
 
 
-def test_finance_manifest_enriches_compare_fundamentals_metadata(monkeypatch) -> None:
+def test_finance_manifest_enriches_wheel_put_candidates_metadata(monkeypatch) -> None:
     monkeypatch.setattr(finance_server, "mcp_adapter", _FakeMCPAdapter())
     manifest = finance_server.get_manifest()
     by_name = _capability_map(manifest)
 
-    compare = by_name["compare_fundamentals"]
-    metadata = compare.get("metadata")
+    wheel = by_name["get_wheel_put_candidates"]
+    metadata = wheel.get("metadata")
     assert isinstance(metadata, dict)
     assert isinstance(metadata.get("intent_hints"), dict)
-    assert "comparar fundamentos" in metadata.get("intent_hints", {}).get("keywords", [])
-    assert metadata.get("parameter_specs", {}).get("symbols", {}).get("required") is True
-    assert metadata.get("flow", {}).get("pre", [{}])[0].get("type") == "resolve_symbol_list"
+    assert "wheel puts" in metadata.get("intent_hints", {}).get("keywords", [])
+    assert metadata.get("parameter_specs", {}).get("symbol", {}).get("required") is True
+    assert metadata.get("flow", {}).get("pre", [{}])[0].get("type") == "resolve_symbol"

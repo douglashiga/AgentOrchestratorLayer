@@ -55,11 +55,11 @@ def _goal_catalog() -> list[dict[str, Any]]:
         },
         {
             "domain": "finance",
-            "goal": "COMPARE_STOCKS",
-            "description": "Compare fundamentals for multiple companies.",
-            "hints": {"keywords": ["compare", "comparar", "fundamentos"]},
+            "goal": "WHEEL_PUT_SCAN",
+            "description": "Find put option candidates for the wheel strategy.",
+            "hints": {"keywords": ["wheel", "puts", "candidatos", "vender puts"]},
             "entities_schema": {
-                "symbols_text": {"type": "array", "required": True, "description": "Companies to compare"},
+                "symbol_text": {"type": "string", "required": True, "description": "Symbol or company name"},
             },
         },
     ]
@@ -78,10 +78,10 @@ def _goal_catalog_dict() -> dict[str, dict[str, Any]]:
                 "symbols_text": {"type": "array"},
             },
         },
-        "finance:COMPARE_STOCKS": {
-            "capabilities": ["compare_fundamentals"],
+        "finance:WHEEL_PUT_SCAN": {
+            "capabilities": ["get_wheel_put_candidates"],
             "entities_schema": {
-                "symbols_text": {"type": "array", "required": True},
+                "symbol_text": {"type": "string", "required": True},
             },
         },
     }
@@ -121,12 +121,12 @@ def _capability_catalog() -> list[dict[str, Any]]:
         },
         {
             "domain": "finance",
-            "capability": "compare_fundamentals",
-            "description": "Compare fundamentals for multiple symbols.",
+            "capability": "get_wheel_put_candidates",
+            "description": "Find put option candidates for the wheel strategy.",
             "schema": {
                 "type": "object",
-                "properties": {"symbols": {"type": "array", "items": {"type": "string"}}},
-                "required": ["symbols"],
+                "properties": {"symbol": {"type": "string"}, "market": {"type": "string"}},
+                "required": ["symbol"],
             },
             "metadata": {},
         },

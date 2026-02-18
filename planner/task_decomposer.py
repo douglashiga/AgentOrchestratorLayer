@@ -35,20 +35,11 @@ class TaskDecomposer:
 
         base_step = self._build_primary_step(intent)
 
-        # Check for generic array parameter decomposition rules in metadata
+        # Generic array parameter decomposition driven by capability metadata
         array_decomp_plan = self._build_array_decomposition_plan(intent, source_meta)
         if array_decomp_plan is not None:
             return self._append_followup_if_configured(
                 base_plan=array_decomp_plan,
-                intent=intent,
-                source_meta=source_meta,
-            )
-
-        # Fallback: legacy multi-symbol plan for backward compatibility
-        multi_symbol_plan = self._build_multi_symbol_price_plan(intent)
-        if multi_symbol_plan is not None:
-            return self._append_followup_if_configured(
-                base_plan=multi_symbol_plan,
                 intent=intent,
                 source_meta=source_meta,
             )
@@ -133,19 +124,11 @@ class TaskDecomposer:
         )
 
     def _build_primary_step(self, intent: IntentOutput | ExecutionIntent) -> ExecutionStep:
-        params = self._runtime_parameters(intent.parameters)
-        if not params.get("symbol"):
-            symbols = params.get("symbols")
-            if isinstance(symbols, list) and symbols:
-                first = symbols[0]
-                if isinstance(first, str) and first.strip():
-                    params["symbol"] = first.strip()
-
         return ExecutionStep(
             id=1,
             domain=intent.domain,
             capability=intent.capability,
-            params=params,
+            params=self._runtime_parameters(intent.parameters),
             depends_on=[],
             required=True,
             output_key="primary",
@@ -304,41 +287,6 @@ class TaskDecomposer:
                 workflow = None
         return isinstance(workflow, dict)
 
-    def _build_multi_symbol_price_plan(self, intent: IntentOutput | ExecutionIntent) -> ExecutionPlan | None:
-        if intent.capability != "get_stock_price":
-            return None
-        symbols = self._symbols_from_params(intent.parameters)
-        if len(symbols) <= 1:
-            return None
-
-        shared_params = {
-            key: value
-            for key, value in self._runtime_parameters(intent.parameters).items()
-            if key not in {"symbol", "symbols"}
-        }
-        steps: list[ExecutionStep] = []
-        for idx, symbol in enumerate(symbols, start=1):
-            params = dict(shared_params)
-            params["symbol"] = symbol
-            steps.append(
-                ExecutionStep(
-                    id=idx,
-                    domain=intent.domain,
-                    capability="get_stock_price",
-                    params=params,
-                    depends_on=[],
-                    required=True,
-                    output_key=f"price_{idx}",
-                )
-            )
-
-        return ExecutionPlan(
-            execution_mode="dag",
-            combine_mode="report",
-            max_concurrency=min(4, max(1, len(steps))),
-            steps=steps,
-        )
-
     def _build_array_decomposition_plan(
         self,
         intent: IntentOutput | ExecutionIntent,
@@ -409,35 +357,6 @@ class TaskDecomposer:
             )
 
         return None
-
-    def _symbols_from_params(self, params: dict[str, Any]) -> list[str]:
-        if not isinstance(params, dict):
-            return []
-
-        symbols: list[str] = []
-        symbol_single = params.get("symbol")
-        if isinstance(symbol_single, str) and symbol_single.strip():
-            symbols.append(symbol_single.strip())
-
-        symbol_list = params.get("symbols")
-        if isinstance(symbol_list, list):
-            for item in symbol_list:
-                if not isinstance(item, str):
-                    continue
-                text = item.strip()
-                if not text:
-                    continue
-                symbols.append(text)
-
-        dedup: list[str] = []
-        seen: set[str] = set()
-        for item in symbols:
-            key = item.upper()
-            if key in seen:
-                continue
-            seen.add(key)
-            dedup.append(item)
-        return dedup
 
     def _resolve_path(self, payload: Any, path: str) -> Any:
         current = payload

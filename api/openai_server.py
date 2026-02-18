@@ -881,7 +881,20 @@ def _format_progress_event_json(event: dict[str, Any], event_type: str) -> str:
 
 
 def _format_progress_event_human(event: dict[str, Any], event_type: str) -> str:
-    if event_type in {"intent_extracted", "intent_normalized"}:
+    if event_type == "intent_extracted":
+        intent = event.get("intent") if isinstance(event.get("intent"), dict) else {}
+        resolved = event.get("intent_resolved") if isinstance(event.get("intent_resolved"), dict) else {}
+        primary_domain = str(intent.get("primary_domain", "")).strip() or "unknown"
+        goal = str(intent.get("goal", "")).strip() or "unknown"
+        capability = str(resolved.get("capability", "")).strip()
+        entities = _inline_fields(intent.get("entities"), max_items=5)
+        conf_raw = intent.get("confidence")
+        conf_text = f" | conf={float(conf_raw):.2f}" if isinstance(conf_raw, (int, float)) else ""
+        cap_text = f" → {capability}" if capability else ""
+        suffix = f"{conf_text} | entities: {entities}" if entities else conf_text
+        return f"[progress] Intent extraido: {primary_domain}.{goal}{cap_text}{suffix}\n"
+
+    if event_type == "intent_normalized":
         intent = event.get("intent") if isinstance(event.get("intent"), dict) else {}
         domain = str(intent.get("domain", "")).strip() or "unknown"
         capability = str(intent.get("capability", "")).strip() or "unknown"
@@ -890,9 +903,8 @@ def _format_progress_event_human(event: dict[str, Any], event_type: str) -> str:
         conf_text = ""
         if isinstance(conf_raw, (int, float)):
             conf_text = f" | conf={float(conf_raw):.2f}"
-        label = "Intent extraido" if event_type == "intent_extracted" else "Intent normalizado"
         suffix = f"{conf_text} | params: {params}" if params else conf_text
-        return f"[progress] {label}: {domain}.{capability}{suffix}\n"
+        return f"[progress] Intent normalizado: {domain}.{capability}{suffix}\n"
 
     if event_type == "plan_generated":
         plan = event.get("plan") if isinstance(event.get("plan"), dict) else {}
@@ -1273,17 +1285,41 @@ async def _run_agent_turn(
     if not resumed_from_clarification:
         intent_output = intent_adapter.extract(user_text, turn_history, session_id=session_id)
         intent = planner.resolve_intent(intent_output)
-    intent_extracted = intent.model_dump(mode="json")
+
+    # intent_extracted = raw IntentOutput (goal + entities from LLM)
+    if intent_output is not None:
+        intent_output_dump = intent_output.model_dump(mode="json")
+        intent_extracted = {
+            "primary_domain": intent_output_dump.get("primary_domain"),
+            "goal": intent_output_dump.get("goal"),
+            "entities": intent_output_dump.get("entities", {}),
+            "confidence": intent_output_dump.get("confidence"),
+        }
+    else:
+        # resumed from clarification — intent is already an ExecutionIntent
+        intent_dump = intent.model_dump(mode="json")
+        intent_extracted = {
+            "primary_domain": intent_dump.get("domain"),
+            "goal": intent_dump.get("capability"),
+            "entities": intent_dump.get("parameters", {}),
+            "confidence": intent_dump.get("confidence"),
+        }
+
+    # intent_resolved = ExecutionIntent (capability + parameters after GoalResolver)
+    intent_resolved_dump = intent.model_dump(mode="json")
+    intent_resolved = {
+        "domain": intent_resolved_dump.get("domain"),
+        "capability": intent_resolved_dump.get("capability"),
+        "confidence": intent_resolved_dump.get("confidence"),
+        "parameters": intent_resolved_dump.get("parameters", {}),
+    }
+
     await _emit_progress_event(
         progress_callback,
         {
             "type": "intent_extracted",
-            "intent": {
-                "domain": intent_extracted.get("domain"),
-                "capability": intent_extracted.get("capability"),
-                "confidence": intent_extracted.get("confidence"),
-                "parameters": intent_extracted.get("parameters", {}),
-            },
+            "intent": intent_extracted,
+            "intent_resolved": intent_resolved,
         },
     )
     intent = _normalize_intent_parameters(intent, engine.orchestrator.domain_registry, entry_request=None)
@@ -1344,6 +1380,7 @@ async def _run_agent_turn(
             "user_text": user_text,
         },
         "intent_extracted": intent_extracted,
+        "intent_resolved": intent_resolved,
         "intent_normalized": intent_normalized,
         "memory_context": getattr(planner, "last_memory_context", {}),
         "plan": plan_dump,

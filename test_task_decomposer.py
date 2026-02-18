@@ -133,12 +133,26 @@ def test_method_contract_takes_precedence_over_legacy_composition() -> None:
 
 
 def test_multi_symbol_get_price_generates_parallel_dag() -> None:
-    decomposer = TaskDecomposer(capability_catalog=[])
+    decomposer = TaskDecomposer(
+        capability_catalog=[
+            {
+                "domain": "finance",
+                "capability": "get_stock_price",
+                "metadata": {
+                    "decomposition": {
+                        "array_params": [
+                            {"param_name": "symbols_text", "single_param_name": "symbol_text", "max_concurrency": 4}
+                        ]
+                    }
+                },
+            }
+        ]
+    )
     intent = ExecutionIntent(
         domain="finance",
         capability="get_stock_price",
         confidence=1.0,
-        parameters={"symbols": ["PETR4.SA", "VALE3.SA"], "notify": True},
+        parameters={"symbols_text": ["PETR4", "VALE3"]},
         original_query="qual o valor da petro e da vale",
     )
 
@@ -146,8 +160,8 @@ def test_multi_symbol_get_price_generates_parallel_dag() -> None:
     assert plan.execution_mode == "dag"
     assert plan.combine_mode == "report"
     assert len(plan.steps) == 2
-    assert plan.steps[0].params.get("symbol") == "PETR4.SA"
-    assert plan.steps[1].params.get("symbol") == "VALE3.SA"
+    assert plan.steps[0].params.get("symbol_text") == "PETR4"
+    assert plan.steps[1].params.get("symbol_text") == "VALE3"
     assert all(step.capability == "get_stock_price" for step in plan.steps)
 
 
@@ -158,12 +172,17 @@ def test_multi_symbol_notify_adds_notifier_followup_when_catalog_supports_it() -
                 "domain": "finance",
                 "capability": "get_stock_price",
                 "metadata": {
+                    "decomposition": {
+                        "array_params": [
+                            {"param_name": "symbols_text", "single_param_name": "symbol_text", "max_concurrency": 4}
+                        ]
+                    },
                     "composition": {
                         "followup_roles": ["notifier"],
                         "enabled_if": {"path": "parameters.notify", "equals": True},
                         "followup_required": False,
                         "followup_output_key": "notification",
-                    }
+                    },
                 },
             },
             {
@@ -192,7 +211,7 @@ def test_multi_symbol_notify_adds_notifier_followup_when_catalog_supports_it() -
         domain="finance",
         capability="get_stock_price",
         confidence=1.0,
-        parameters={"symbols": ["PETR4.SA", "VALE3.SA"], "notify": True},
+        parameters={"symbols_text": ["PETR4", "VALE3"], "notify": True},
         original_query="qual o valor da petro e vale e manda no telegram",
     )
 

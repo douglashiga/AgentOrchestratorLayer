@@ -178,14 +178,22 @@ RANKING_PERIOD_ALIASES = {
     "HOJE": "1d",
     "AGORA": "1d",
     "TODAY": "1d",
+    "ULTIMO DIA": "1d",
     "SEMANA": "5d",
     "SEMANAL": "5d",
+    "ULTIMOS DIAS": "5d",
     "MÊS": "1mo",
     "MES": "1mo",
     "MENSAL": "1mo",
+    "ULTIMO MES": "1mo",
+    "ULTIMOS MES": "1mo",
+    "ULTIMO MÊS": "1mo",
+    "ULTIMOS MÊS": "1mo",
     "TRIMESTRE": "3mo",
+    "ULTIMO TRIMESTRE": "3mo",
     "ANO": "1y",
     "ANUAL": "1y",
+    "ULTIMO ANO": "1y",
 }
 
 HISTORICAL_PERIOD_ALIASES = {
@@ -251,7 +259,7 @@ SYMBOL_SEARCH_FLOW = {
             "param": "symbol",
             "required": True,
             "search_capability": "yahoo_search",
-            "search_fallback_capabilities": ["search_symbol"],
+            "search_fallback_capabilities": ["search_by_name"],
         }
     ]
 }
@@ -263,7 +271,7 @@ SYMBOL_LIST_SEARCH_FLOW = {
             "param": "symbols",
             "required": True,
             "search_capability": "yahoo_search",
-            "search_fallback_capabilities": ["search_symbol"],
+            "search_fallback_capabilities": ["search_by_name"],
         }
     ]
 }
@@ -348,10 +356,15 @@ METADATA_OVERRIDES = {
         "decomposition": {
             "array_params": [
                 {
+                    "param_name": "symbols_text",
+                    "single_param_name": "symbol_text",
+                    "max_concurrency": 4,
+                },
+                {
                     "param_name": "symbols",
                     "single_param_name": "symbol",
                     "max_concurrency": 4,
-                }
+                },
             ]
         },
         "flow": SYMBOL_SEARCH_FLOW,
@@ -599,63 +612,6 @@ METADATA_OVERRIDES = {
         },
         "explanation_template": "Stocks showing {params[signal_type]} signals in {result[market]}.",
     },
-    "compare_fundamentals": {
-        "intent_description": (
-            "Compare fundamental metrics for multiple stocks. "
-            "Use when user asks to compare companies by valuation/profitability."
-        ),
-        "intent_hints": {
-            "keywords": [
-                "compare fundamentos",
-                "comparar fundamentos",
-                "comparar acoes",
-                "comparar ações",
-                "valuation comparativo",
-            ],
-            "examples": [
-                "compare os fundamentos de vale3 e petr4",
-                "comparar aapl e msft por pe ratio e roe",
-            ],
-        },
-        "symbols_required": True,
-        "parameter_specs": {
-            "symbols": {
-                "type": "array",
-                "required": True,
-                "items": {
-                    "type": "string",
-                    "normalization": {"case": "upper"},
-                    "aliases": SYMBOL_ALIASES,
-                },
-                "examples": [["VALE3.SA", "PETR4.SA"]],
-            },
-            "metrics": {
-                "type": "array",
-                "items": {
-                    "type": "string",
-                    "normalization": {"case": "lower"},
-                    "aliases": {
-                        "P/L": "pe_ratio",
-                        "PE": "pe_ratio",
-                        "ROE": "roe",
-                        "MARGEM": "net_margin",
-                    },
-                },
-                "examples": [["pe_ratio", "roe"]],
-            },
-        },
-        "explanation_template": "Fundamental comparison.",
-        "flow": SYMBOL_LIST_SEARCH_FLOW,
-        "decomposition": {
-            "array_params": [
-                {
-                    "param_name": "symbols",
-                    "single_param_name": "symbol",
-                    "max_concurrency": 4,
-                }
-            ]
-        },
-    },
     "list_jobs": {
         "intent_description": "List available data pipeline jobs.",
         "intent_hints": {
@@ -691,7 +647,7 @@ METADATA_OVERRIDES = {
         "flow": SYMBOL_SEARCH_FLOW,
         "explanation_template": "Fundamentals data for {symbol} ({market} market).",
     },
-    "get_dividends": {
+    "get_dividend_history": {
         "intent_description": "Get dividend history for a specific stock symbol.",
         "intent_hints": {
             "keywords": ["dividendos da", "historico de dividendos", "dividend history"],
@@ -699,21 +655,27 @@ METADATA_OVERRIDES = {
         },
         "parameter_specs": {
             "symbol": dict(SYMBOL_PARAM_SPEC),
+            "period": {
+                "type": "string",
+                "default": "2y",
+                "enum": ["1y", "2y", "5y"],
+                "examples": ["2y", "5y"],
+            },
         },
         "flow": SYMBOL_SEARCH_FLOW,
         "explanation_template": "Dividend history for {symbol} ({currency}).",
     },
-    "get_company_info": {
+    "get_company_profile": {
         "intent_description": "Get company profile and business information for a symbol.",
         "intent_hints": {
-            "keywords": ["sobre a empresa", "company info", "setor da empresa", "perfil da empresa"],
+            "keywords": ["sobre a empresa", "company info", "setor da empresa", "perfil da empresa", "company profile"],
             "examples": ["me fale sobre a empresa vale3", "company info da aapl"],
         },
         "parameter_specs": {
             "symbol": dict(SYMBOL_PARAM_SPEC),
         },
         "flow": SYMBOL_SEARCH_FLOW,
-        "explanation_template": "Company info for {result[name]}.",
+        "explanation_template": "Company profile for {result[name]}.",
     },
     "get_option_chain": {
         "intent_description": "Get option chain for a stock symbol.",
@@ -751,28 +713,20 @@ METADATA_OVERRIDES = {
         "flow": SYMBOL_SEARCH_FLOW,
         "explanation_template": "Financial statements for {symbol}.",
     },
-    "get_account_summary": {
-        "intent_description": "Get brokerage account summary.",
-        "intent_hints": {
-            "keywords": ["resumo da conta", "account summary", "saldo da conta"],
-            "examples": ["meu account summary"],
-        },
-        "explanation_template": "Account summary retrieved.",
-    },
-    "search_symbol": {
-        "intent_description": "Search ticker symbols by company name or keyword.",
+    "search_by_name": {
+        "intent_description": "Search ticker symbols by company name.",
         "intent_hints": {
             "keywords": ["qual o ticker", "procurar ticker", "buscar simbolo", "buscar símbolo"],
             "examples": ["qual o ticker da petrobras?", "buscar simbolo da nordea"],
         },
         "parameter_specs": {
-            "query": {
+            "name": {
                 "type": "string",
                 "required": True,
                 "examples": ["petrobras", "nordea"],
             }
         },
-        "explanation_template": "Search results for '{params[query]}'.",
+        "explanation_template": "Search results for '{params[name]}'.",
     },
     "yahoo_search": {
         "intent_description": "Search symbols using Yahoo lookup.",
@@ -788,6 +742,322 @@ METADATA_OVERRIDES = {
             }
         },
         "explanation_template": "Yahoo search results for '{params[query]}'.",
+    },
+    # ─── Expanded Screeners ────────────────────────────────────────────
+    "get_most_active_stocks": {
+        "intent_description": "Find most actively traded stocks by volume for a market.",
+        "intent_hints": {
+            "keywords": [
+                "mais negociadas", "mais ativas", "volume alto",
+                "most active", "mais liquidez",
+            ],
+            "examples": [
+                "quais as acoes mais negociadas hoje no brasil?",
+                "most active stocks in sweden",
+            ],
+        },
+        "market_required": True,
+        "default_market": "SE",
+        "parameter_specs": {
+            "market": dict(MARKET_PARAM_SPEC),
+            "period": {
+                "type": "string",
+                "default": "1D",
+                "enum": ["1D", "5D"],
+                "examples": ["1D", "5D"],
+            },
+            "limit": {
+                "type": "integer",
+                "default": 10,
+                "examples": [10, 20],
+            },
+        },
+        "explanation_template": "Most active stocks in {result[market]}.",
+    },
+    "get_oversold_stocks": {
+        "intent_description": "Find oversold stocks (low RSI) for a market.",
+        "intent_hints": {
+            "keywords": [
+                "sobrevendido", "oversold", "rsi baixo",
+                "oportunidade de compra", "acoes baratas rsi",
+            ],
+            "examples": [
+                "acoes sobrevendidas no brasil",
+                "oversold stocks in sweden",
+            ],
+        },
+        "market_required": True,
+        "default_market": "SE",
+        "parameter_specs": {
+            "market": dict(MARKET_PARAM_SPEC),
+            "limit": {
+                "type": "integer",
+                "default": 10,
+                "examples": [10, 20],
+            },
+        },
+        "explanation_template": "Oversold stocks in {result[market]}.",
+    },
+    "get_overbought_stocks": {
+        "intent_description": "Find overbought stocks (high RSI) for a market.",
+        "intent_hints": {
+            "keywords": [
+                "sobrecomprado", "overbought", "rsi alto",
+                "excessivamente comprado",
+            ],
+            "examples": [
+                "acoes sobrecompradas no brasil",
+                "overbought stocks in usa",
+            ],
+        },
+        "market_required": True,
+        "default_market": "SE",
+        "parameter_specs": {
+            "market": dict(MARKET_PARAM_SPEC),
+            "limit": {
+                "type": "integer",
+                "default": 10,
+                "examples": [10, 20],
+            },
+        },
+        "explanation_template": "Overbought stocks in {result[market]}.",
+    },
+    # ─── Fundamentals Intelligence ─────────────────────────────────────
+    "get_analyst_recommendations": {
+        "intent_description": "Get analyst consensus recommendations (buy/hold/sell) for a stock.",
+        "intent_hints": {
+            "keywords": [
+                "recomendacao", "recomendação", "analistas",
+                "consenso", "buy sell hold", "analyst recommendation",
+            ],
+            "examples": [
+                "qual a recomendacao dos analistas para petr4?",
+                "analyst recommendations for aapl",
+            ],
+        },
+        "parameter_specs": {
+            "symbol": dict(SYMBOL_PARAM_SPEC),
+        },
+        "flow": SYMBOL_SEARCH_FLOW,
+        "explanation_template": "Analyst recommendations for {symbol}.",
+    },
+    "get_technical_analysis": {
+        "intent_description": "Get comprehensive technical analysis indicators for a stock.",
+        "intent_hints": {
+            "keywords": [
+                "analise tecnica", "análise técnica", "indicadores tecnicos",
+                "technical analysis", "analise completa tecnica",
+            ],
+            "examples": [
+                "analise tecnica da vale3",
+                "technical analysis of aapl",
+            ],
+        },
+        "parameter_specs": {
+            "symbol": dict(SYMBOL_PARAM_SPEC),
+            "period": {
+                "type": "string",
+                "default": "1y",
+                "enum": ["6mo", "1y", "2y"],
+                "examples": ["1y", "6mo"],
+            },
+        },
+        "flow": SYMBOL_SEARCH_FLOW,
+        "explanation_template": "Technical analysis for {symbol}.",
+    },
+    "get_news_sentiment": {
+        "intent_description": "Get news sentiment analysis for a stock.",
+        "intent_hints": {
+            "keywords": [
+                "sentimento", "noticias", "notícias", "news sentiment",
+                "humor do mercado", "sentimento de mercado",
+            ],
+            "examples": [
+                "qual o sentimento das noticias sobre petr4?",
+                "news sentiment for tsla",
+            ],
+        },
+        "parameter_specs": {
+            "symbol": dict(SYMBOL_PARAM_SPEC),
+        },
+        "flow": SYMBOL_SEARCH_FLOW,
+        "explanation_template": "News sentiment for {symbol}.",
+    },
+    "get_comprehensive_stock_info": {
+        "intent_description": "Get comprehensive information about a stock (price, fundamentals, analyst views, technicals).",
+        "intent_hints": {
+            "keywords": [
+                "tudo sobre", "analise completa", "análise completa",
+                "deep dive", "informacoes completas", "visao geral",
+                "comprehensive", "resumo completo",
+            ],
+            "examples": [
+                "me fale tudo sobre a petr4",
+                "deep dive in aapl",
+                "analise completa da vale3",
+            ],
+        },
+        "parameter_specs": {
+            "symbol": dict(SYMBOL_PARAM_SPEC),
+        },
+        "flow": SYMBOL_SEARCH_FLOW,
+        "explanation_template": "Comprehensive analysis for {symbol}.",
+    },
+    # ─── Wheel Strategy ────────────────────────────────────────────────
+    "get_wheel_put_candidates": {
+        "intent_description": "Find put option candidates for the wheel strategy on a given stock.",
+        "intent_hints": {
+            "keywords": [
+                "wheel puts", "puts para wheel", "candidatos wheel",
+                "vender puts", "sell puts", "put candidates",
+            ],
+            "examples": [
+                "quais os melhores puts para wheel na nordea?",
+                "wheel put candidates for aapl",
+            ],
+        },
+        "default_market": "sweden",
+        "parameter_specs": {
+            "symbol": dict(SYMBOL_PARAM_SPEC),
+            "market": {
+                "type": "string",
+                "default": "sweden",
+                "examples": ["sweden", "brazil", "usa"],
+            },
+            "delta_min": {"type": "number", "default": 0.25},
+            "delta_max": {"type": "number", "default": 0.35},
+            "dte_min": {"type": "integer", "default": 4},
+            "dte_max": {"type": "integer", "default": 10},
+            "limit": {"type": "integer", "default": 5},
+            "require_liquidity": {"type": "boolean", "default": True},
+        },
+        "flow": SYMBOL_SEARCH_FLOW,
+        "explanation_template": "Wheel put candidates for {symbol}.",
+    },
+    "get_wheel_put_return": {
+        "intent_description": "Calculate return for a specific wheel put position.",
+        "intent_hints": {
+            "keywords": [
+                "retorno do put", "rendimento put", "quanto vou ganhar",
+                "put return", "wheel return",
+            ],
+            "examples": [
+                "qual o retorno do put de nordea strike 120?",
+                "wheel put return for aapl strike 180",
+            ],
+        },
+        "parameter_specs": {
+            "symbol": dict(SYMBOL_PARAM_SPEC),
+            "strike": {"type": "number", "required": True},
+            "expiry": {"type": "string", "required": True, "examples": ["2025-06-20"]},
+            "premium": {"type": "number", "required": True},
+        },
+        "flow": SYMBOL_SEARCH_FLOW,
+        "explanation_template": "Wheel put return for {symbol} at strike {params[strike]}.",
+    },
+    "get_wheel_covered_call_candidates": {
+        "intent_description": "Find covered call candidates for the wheel strategy after assignment.",
+        "intent_hints": {
+            "keywords": [
+                "covered calls", "calls cobertas", "wheel calls",
+                "vender calls", "call candidates",
+            ],
+            "examples": [
+                "covered calls para nordea com custo medio de 120?",
+                "wheel call candidates for aapl cost basis 180",
+            ],
+        },
+        "default_market": "sweden",
+        "parameter_specs": {
+            "symbol": dict(SYMBOL_PARAM_SPEC),
+            "average_cost": {"type": "number", "required": True, "description": "Average cost basis per share"},
+            "market": {"type": "string", "default": "sweden"},
+            "delta_min": {"type": "number", "default": 0.25},
+            "delta_max": {"type": "number", "default": 0.35},
+            "dte_min": {"type": "integer", "default": 4},
+            "dte_max": {"type": "integer", "default": 21},
+            "min_upside_pct": {"type": "number", "default": 1.0},
+            "limit": {"type": "integer", "default": 5},
+        },
+        "flow": SYMBOL_SEARCH_FLOW,
+        "explanation_template": "Covered call candidates for {symbol}.",
+    },
+    "get_wheel_contract_capacity": {
+        "intent_description": "Calculate how many wheel contracts you can sell given capital.",
+        "intent_hints": {
+            "keywords": [
+                "quantos contratos", "capacidade capital", "quanto posso vender",
+                "contract capacity", "capital allocation",
+            ],
+            "examples": [
+                "quantos contratos posso vender de nordea com 100000 sek?",
+                "wheel capacity for aapl with 50000 usd",
+            ],
+        },
+        "default_market": "sweden",
+        "parameter_specs": {
+            "symbol": dict(SYMBOL_PARAM_SPEC),
+            "capital_sek": {"type": "number", "required": True, "description": "Available capital in SEK"},
+            "market": {"type": "string", "default": "sweden"},
+            "strike": {"type": "number"},
+            "margin_requirement_pct": {"type": "number", "default": 1.0},
+            "cash_buffer_pct": {"type": "number", "default": 0.0},
+            "target_dte": {"type": "integer", "default": 7},
+        },
+        "flow": SYMBOL_SEARCH_FLOW,
+        "explanation_template": "Contract capacity for {symbol} with {params[capital_sek]} SEK.",
+    },
+    "build_wheel_multi_stock_plan": {
+        "intent_description": "Build a diversified wheel strategy plan across multiple stocks.",
+        "intent_hints": {
+            "keywords": [
+                "plano wheel multiplos", "carteira wheel", "distribuir capital",
+                "multi stock plan", "diversificar wheel",
+            ],
+            "examples": [
+                "monte um plano wheel com 500000 sek",
+                "build wheel plan with 100000 sek across multiple stocks",
+            ],
+        },
+        "default_market": "sweden",
+        "parameter_specs": {
+            "capital_sek": {"type": "number", "required": True, "description": "Total capital to allocate in SEK"},
+            "symbols": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of symbols to consider (optional, auto-selects if empty)",
+            },
+            "market": {"type": "string", "default": "sweden"},
+            "delta_min": {"type": "number", "default": 0.25},
+            "delta_max": {"type": "number", "default": 0.35},
+            "dte_min": {"type": "integer", "default": 4},
+            "dte_max": {"type": "integer", "default": 10},
+            "margin_requirement_pct": {"type": "number", "default": 1.0},
+            "cash_buffer_pct": {"type": "number", "default": 0.10},
+        },
+        "explanation_template": "Wheel multi-stock plan with {params[capital_sek]} SEK.",
+    },
+    "analyze_wheel_put_risk": {
+        "intent_description": "Analyze risk of a wheel put position (downside scenarios).",
+        "intent_hints": {
+            "keywords": [
+                "risco do put", "risco wheel", "analisar risco",
+                "put risk", "wheel risk analysis", "downside risk",
+            ],
+            "examples": [
+                "qual o risco do wheel put na nordea?",
+                "analyze wheel risk for aapl",
+            ],
+        },
+        "default_market": "sweden",
+        "parameter_specs": {
+            "symbol": dict(SYMBOL_PARAM_SPEC),
+            "market": {"type": "string", "default": "sweden"},
+            "pct_below_spot": {"type": "number", "default": 5.0, "description": "Percentage below spot to analyze"},
+            "target_dte": {"type": "integer", "default": 7},
+        },
+        "flow": SYMBOL_SEARCH_FLOW,
+        "explanation_template": "Wheel put risk analysis for {symbol}.",
     },
 }
 
@@ -954,12 +1224,17 @@ def get_manifest():
                 "dividendos",
                 "opcoes",
                 "opções",
+                "wheel",
+                "puts",
+                "calls",
+                "analistas",
+                "sentimento",
             ],
             "examples": [
                 "qual o valor da petr4?",
                 "quais as maiores altas do bovespa hoje?",
-                "compare os fundamentos de vale3 e petr4",
                 "historico de cotacao da vale3 em 1 ano",
+                "wheel put candidates para nordea",
             ],
         },
         "goals": [
@@ -1095,7 +1370,7 @@ def get_manifest():
             {
                 "goal": "DIVIDEND_ANALYSIS",
                 "description": "Find high dividend yield stocks or dividend history for a symbol",
-                "capabilities": ["get_top_dividend_payers", "get_dividends"],
+                "capabilities": ["get_top_dividend_payers", "get_dividend_history"],
                 "requires_domains": [],
                 "hints": {
                     "keywords": [
@@ -1117,7 +1392,7 @@ def get_manifest():
                         "description": "RANKING for top payers by market, HISTORY for a specific symbol's dividend history",
                         "capability_map": {
                             "RANKING": "get_top_dividend_payers",
-                            "HISTORY": "get_dividends",
+                            "HISTORY": "get_dividend_history",
                         },
                     },
                     "symbol_text": {
@@ -1147,22 +1422,6 @@ def get_manifest():
                 },
             },
             {
-                "goal": "COMPARE_STOCKS",
-                "description": "Compare fundamental metrics of multiple stocks",
-                "capabilities": ["compare_fundamentals"],
-                "requires_domains": [],
-                "hints": {
-                    "keywords": [
-                        "compare fundamentos", "comparar fundamentos",
-                        "comparar acoes", "comparar ações", "valuation comparativo",
-                    ],
-                    "examples": [
-                        "compare os fundamentos de vale3 e petr4",
-                        "comparar aapl e msft por pe ratio e roe",
-                    ],
-                },
-            },
-            {
                 "goal": "FUNDAMENTALS",
                 "description": "Get fundamental data for a specific stock",
                 "capabilities": ["get_fundamentals"],
@@ -1181,7 +1440,7 @@ def get_manifest():
             {
                 "goal": "COMPANY_PROFILE",
                 "description": "Get company profile and business information",
-                "capabilities": ["get_company_info"],
+                "capabilities": ["get_company_profile"],
                 "requires_domains": [],
                 "hints": {
                     "keywords": [
@@ -1245,23 +1504,9 @@ def get_manifest():
                 },
             },
             {
-                "goal": "ACCOUNT_OVERVIEW",
-                "description": "Get brokerage account summary",
-                "capabilities": ["get_account_summary"],
-                "requires_domains": [],
-                "hints": {
-                    "keywords": [
-                        "resumo da conta", "account summary", "saldo da conta",
-                    ],
-                    "examples": [
-                        "meu account summary",
-                    ],
-                },
-            },
-            {
                 "goal": "SEARCH_SYMBOL",
                 "description": "Search ticker symbols by company name",
-                "capabilities": ["search_symbol", "yahoo_search"],
+                "capabilities": ["search_by_name", "yahoo_search"],
                 "requires_domains": [],
                 "hints": {
                     "keywords": [
@@ -1311,6 +1556,351 @@ def get_manifest():
                     "job_name_text": {
                         "type": "string",
                         "description": "Job name as mentioned by user (e.g. 'earnings_sync')",
+                    },
+                },
+            },
+            # ─── Expanded Screeners ───────────────────────────────────
+            {
+                "goal": "ACTIVE_STOCKS",
+                "description": "Find most actively traded stocks by volume for a market",
+                "capabilities": ["get_most_active_stocks"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "mais negociadas", "mais ativas", "volume alto",
+                        "most active", "mais liquidez",
+                    ],
+                    "examples": [
+                        "quais as acoes mais negociadas hoje?",
+                        "most active stocks in sweden",
+                    ],
+                },
+                "entities_schema": {
+                    "market_text": {
+                        "type": "string",
+                        "description": "Market name as mentioned by user",
+                    },
+                    "period_text": {
+                        "type": "string",
+                        "description": "Period as mentioned by user (e.g. 'hoje', 'semana')",
+                    },
+                },
+            },
+            {
+                "goal": "OVERSOLD_STOCKS",
+                "description": "Find oversold stocks (low RSI) for a market",
+                "capabilities": ["get_oversold_stocks"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "sobrevendido", "oversold", "rsi baixo",
+                        "oportunidade de compra",
+                    ],
+                    "examples": [
+                        "acoes sobrevendidas no brasil",
+                        "oversold stocks in sweden",
+                    ],
+                },
+                "entities_schema": {
+                    "market_text": {
+                        "type": "string",
+                        "description": "Market name as mentioned by user",
+                    },
+                },
+            },
+            {
+                "goal": "OVERBOUGHT_STOCKS",
+                "description": "Find overbought stocks (high RSI) for a market",
+                "capabilities": ["get_overbought_stocks"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "sobrecomprado", "overbought", "rsi alto",
+                        "excessivamente comprado",
+                    ],
+                    "examples": [
+                        "acoes sobrecompradas no brasil",
+                        "overbought stocks in usa",
+                    ],
+                },
+                "entities_schema": {
+                    "market_text": {
+                        "type": "string",
+                        "description": "Market name as mentioned by user",
+                    },
+                },
+            },
+            # ─── Fundamentals Intelligence ────────────────────────────
+            {
+                "goal": "ANALYST_VIEW",
+                "description": "Get analyst consensus recommendations for a stock",
+                "capabilities": ["get_analyst_recommendations"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "recomendacao", "recomendação", "analistas",
+                        "consenso", "buy sell hold", "analyst recommendation",
+                    ],
+                    "examples": [
+                        "qual a recomendacao dos analistas para petr4?",
+                        "analyst recommendations for aapl",
+                    ],
+                },
+                "entities_schema": {
+                    "symbol_text": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Stock symbol or company name as mentioned by user",
+                    },
+                },
+            },
+            {
+                "goal": "TECH_ANALYSIS",
+                "description": "Get comprehensive technical analysis indicators for a stock",
+                "capabilities": ["get_technical_analysis"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "analise tecnica", "análise técnica", "indicadores tecnicos",
+                        "technical analysis", "tecnica completa",
+                    ],
+                    "examples": [
+                        "analise tecnica da vale3",
+                        "technical analysis of aapl",
+                    ],
+                },
+                "entities_schema": {
+                    "symbol_text": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Stock symbol or company name as mentioned by user",
+                    },
+                    "period_text": {
+                        "type": "string",
+                        "description": "Analysis period as mentioned by user (e.g. '1 ano', '6 meses')",
+                    },
+                },
+            },
+            {
+                "goal": "NEWS_SENTIMENT",
+                "description": "Get news sentiment analysis for a stock",
+                "capabilities": ["get_news_sentiment"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "sentimento", "noticias", "notícias",
+                        "news sentiment", "humor do mercado",
+                    ],
+                    "examples": [
+                        "qual o sentimento das noticias sobre petr4?",
+                        "news sentiment for tsla",
+                    ],
+                },
+                "entities_schema": {
+                    "symbol_text": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Stock symbol or company name as mentioned by user",
+                    },
+                },
+            },
+            {
+                "goal": "STOCK_DEEP_DIVE",
+                "description": "Get comprehensive information about a stock (price, fundamentals, technicals, analyst views)",
+                "capabilities": ["get_comprehensive_stock_info"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "tudo sobre", "analise completa", "análise completa",
+                        "deep dive", "informacoes completas", "visao geral",
+                        "resumo completo",
+                    ],
+                    "examples": [
+                        "me fale tudo sobre a petr4",
+                        "deep dive in aapl",
+                        "analise completa da vale3",
+                    ],
+                },
+                "entities_schema": {
+                    "symbol_text": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Stock symbol or company name as mentioned by user",
+                    },
+                },
+            },
+            # ─── Wheel Strategy ───────────────────────────────────────
+            {
+                "goal": "WHEEL_PUT_SCAN",
+                "description": "Find put option candidates for the wheel strategy",
+                "capabilities": ["get_wheel_put_candidates"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "wheel puts", "puts para wheel", "candidatos wheel",
+                        "vender puts", "sell puts", "put candidates",
+                    ],
+                    "examples": [
+                        "quais os melhores puts para wheel na nordea?",
+                        "wheel put candidates for aapl",
+                    ],
+                },
+                "entities_schema": {
+                    "symbol_text": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Stock symbol or company name as mentioned by user",
+                    },
+                    "market_text": {
+                        "type": "string",
+                        "description": "Market as mentioned by user (e.g. 'suécia', 'brasil')",
+                    },
+                },
+            },
+            {
+                "goal": "WHEEL_PUT_RETURN",
+                "description": "Calculate return for a specific wheel put position",
+                "capabilities": ["get_wheel_put_return"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "retorno do put", "rendimento put", "quanto vou ganhar",
+                        "put return", "wheel return",
+                    ],
+                    "examples": [
+                        "qual o retorno do put de nordea strike 120?",
+                        "wheel put return for aapl strike 180",
+                    ],
+                },
+                "entities_schema": {
+                    "symbol_text": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Stock symbol or company name",
+                    },
+                    "strike_text": {
+                        "type": "string",
+                        "description": "Strike price as mentioned by user",
+                    },
+                    "expiry_text": {
+                        "type": "string",
+                        "description": "Expiry date as mentioned by user",
+                    },
+                    "premium_text": {
+                        "type": "string",
+                        "description": "Premium received as mentioned by user",
+                    },
+                },
+            },
+            {
+                "goal": "WHEEL_CALL_SCAN",
+                "description": "Find covered call candidates for the wheel strategy after assignment",
+                "capabilities": ["get_wheel_covered_call_candidates"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "covered calls", "calls cobertas", "wheel calls",
+                        "vender calls", "call candidates",
+                    ],
+                    "examples": [
+                        "covered calls para nordea com custo medio de 120?",
+                        "wheel call candidates for aapl cost basis 180",
+                    ],
+                },
+                "entities_schema": {
+                    "symbol_text": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Stock symbol or company name",
+                    },
+                    "average_cost_text": {
+                        "type": "string",
+                        "description": "Average cost basis as mentioned by user",
+                    },
+                },
+            },
+            {
+                "goal": "WHEEL_CAPACITY",
+                "description": "Calculate how many wheel contracts you can sell given capital",
+                "capabilities": ["get_wheel_contract_capacity"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "quantos contratos", "capacidade capital", "quanto posso vender",
+                        "contract capacity", "capital allocation",
+                    ],
+                    "examples": [
+                        "quantos contratos posso vender de nordea com 100000 sek?",
+                        "wheel capacity for aapl with 50000",
+                    ],
+                },
+                "entities_schema": {
+                    "symbol_text": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Stock symbol or company name",
+                    },
+                    "capital_text": {
+                        "type": "string",
+                        "description": "Capital amount as mentioned by user",
+                    },
+                },
+            },
+            {
+                "goal": "WHEEL_MULTI_PLAN",
+                "description": "Build a diversified wheel strategy plan across multiple stocks",
+                "capabilities": ["build_wheel_multi_stock_plan"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "plano wheel multiplos", "carteira wheel", "distribuir capital",
+                        "multi stock plan", "diversificar wheel",
+                    ],
+                    "examples": [
+                        "monte um plano wheel com 500000 sek",
+                        "build wheel plan across multiple stocks",
+                    ],
+                },
+                "entities_schema": {
+                    "capital_text": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Capital amount as mentioned by user",
+                    },
+                    "symbols_text": {
+                        "type": "array",
+                        "description": "List of specific symbols to consider (optional)",
+                    },
+                    "market_text": {
+                        "type": "string",
+                        "description": "Market as mentioned by user",
+                    },
+                },
+            },
+            {
+                "goal": "WHEEL_RISK",
+                "description": "Analyze risk of a wheel put position (downside scenarios)",
+                "capabilities": ["analyze_wheel_put_risk"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "risco do put", "risco wheel", "analisar risco",
+                        "put risk", "wheel risk analysis", "downside risk",
+                    ],
+                    "examples": [
+                        "qual o risco do wheel put na nordea?",
+                        "analyze wheel risk for aapl",
+                    ],
+                },
+                "entities_schema": {
+                    "symbol_text": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Stock symbol or company name",
+                    },
+                    "market_text": {
+                        "type": "string",
+                        "description": "Market as mentioned by user",
                     },
                 },
             },

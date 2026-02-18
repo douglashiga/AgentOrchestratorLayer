@@ -548,6 +548,13 @@ def _apply_parameter_contracts(params: dict[str, Any], metadata: dict[str, Any])
         if not key:
             continue
         value = normalized.get(key)
+        # If field is missing, check for a *_text variant supplied by the intent extractor
+        # (e.g. market_text → market, period_text → period).
+        # The raw text value will be alias-resolved by _normalize_parameter_value below.
+        if value in (None, ""):
+            text_raw = normalized.get(f"{key}_text")
+            if text_raw not in (None, ""):
+                value = text_raw
         if value in (None, ""):
             inferred = _infer_value_from_symbol_suffix(normalized, spec)
             if inferred not in (None, ""):
