@@ -27,6 +27,60 @@ def _parse_csv_set(raw: str) -> set[str]:
     return {item.strip() for item in raw.split(",") if item.strip()}
 
 
+def normalize_capability_catalog(raw_catalog: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize a raw capability catalog to a canonical form.
+
+    Resolves field aliases:
+    - ``name`` or ``capability`` → ``capability``
+    - ``input_schema`` or ``schema`` (str) → ``schema`` (dict)
+    - ``metadata`` (str) → ``metadata`` (dict)
+
+    This is the single normalization path shared by all planner components.
+    """
+    normalized: list[dict[str, Any]] = []
+    for row in raw_catalog:
+        if not isinstance(row, dict):
+            continue
+        domain = str(row.get("domain", "")).strip()
+        capability = str(row.get("capability") or row.get("name") or "").strip()
+        if not domain or not capability:
+            continue
+
+        description = str(row.get("description", "")).strip()
+        schema = row.get("schema")
+        if not isinstance(schema, dict):
+            schema = row.get("input_schema")
+        if isinstance(schema, str):
+            try:
+                parsed_schema = json.loads(schema)
+                schema = parsed_schema if isinstance(parsed_schema, dict) else {}
+            except Exception:
+                schema = {}
+        if not isinstance(schema, dict):
+            schema = {}
+
+        metadata = row.get("metadata", {})
+        if isinstance(metadata, str):
+            try:
+                parsed_meta = json.loads(metadata)
+                metadata = parsed_meta if isinstance(parsed_meta, dict) else {}
+            except Exception:
+                metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        normalized.append(
+            {
+                "domain": domain,
+                "capability": capability,
+                "description": description,
+                "schema": schema,
+                "metadata": metadata,
+            }
+        )
+    return normalized
+
+
 class FunctionCallingPlanner:
     """Model-guided planning loop with strict catalog validation."""
 
@@ -121,18 +175,16 @@ class FunctionCallingPlanner:
         intent: IntentOutput | ExecutionIntent,
         current_steps: list[ExecutionStep],
     ) -> ExecutionStep | None:
+        # _eligible_candidates now returns compact entries; composition is a top-level key.
         candidates = []
-        for entry in self._eligible_candidates(current_steps):
-            metadata = entry.get("metadata")
-            if not isinstance(metadata, dict):
-                continue
-            if not self._is_step_allowed_by_intent(intent=intent, catalog_entry=entry):
-                continue
-            composition = metadata.get("composition")
-            if not isinstance(composition, dict):
-                continue
+        for entry in self._eligible_candidates(current_steps, intent):
+            composition = entry.get("composition") or {}
             role = str(composition.get("role", "")).strip()
             if not role:
+                continue
+            # Validate against intent policy using the full catalog entry
+            full_entry = self._resolve_catalog_entry(entry["domain"], entry["capability"])
+            if full_entry and not self._is_step_allowed_by_intent(intent=intent, catalog_entry=full_entry):
                 continue
             candidates.append(entry)
 
@@ -140,13 +192,11 @@ class FunctionCallingPlanner:
             return None
 
         candidates.sort(
-            key=lambda row: int(
-                (row.get("metadata") or {}).get("composition", {}).get("priority", 0)
-            ),
+            key=lambda row: int((row.get("composition") or {}).get("priority", 0)),
             reverse=True,
         )
         chosen = candidates[0]
-        composition = (chosen.get("metadata") or {}).get("composition", {})
+        composition = chosen.get("composition") or {}
         params = self._build_params_from_param_map(intent.parameters, composition.get("param_map"))
         if not params:
             return None
@@ -193,7 +243,7 @@ class FunctionCallingPlanner:
         combine_mode: str,
         memory_context: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        candidates = self._eligible_candidates(current_steps)
+        candidates = self._eligible_candidates(current_steps, intent)
         if not candidates:
             return None
 
@@ -321,14 +371,32 @@ class FunctionCallingPlanner:
             return mode
         return default
 
-    def _eligible_candidates(self, current_steps: list[ExecutionStep]) -> list[dict[str, Any]]:
+    def _eligible_candidates(
+        self,
+        current_steps: list[ExecutionStep],
+        intent: IntentOutput | ExecutionIntent,
+    ) -> list[dict[str, Any]]:
+        """Return a compact list of candidate capabilities for LLM planning.
+
+        Filters:
+        - Skips capabilities already in the plan.
+        - Skips capabilities excluded by domain/capability filters.
+        - Skips capabilities with ``planner_available=False``.
+        - Skips capabilities whose ``composition.enabled_if`` condition evaluates to False
+          given the current intent context.
+
+        The returned entries are compact (no full schema / method_spec / parameter_specs),
+        keeping the LLM payload small and focused.
+        """
         used = {(step.domain or "", step.capability) for step in current_steps}
         candidates: list[dict[str, Any]] = []
         for entry in self.capability_catalog:
             domain = str(entry.get("domain", "")).strip()
             capability = str(entry.get("capability", "")).strip()
             metadata = entry.get("metadata", {})
-            if isinstance(metadata, dict) and metadata.get("planner_available") is False:
+            if not isinstance(metadata, dict):
+                metadata = {}
+            if metadata.get("planner_available") is False:
                 continue
             if not domain or not capability:
                 continue
@@ -336,16 +404,110 @@ class FunctionCallingPlanner:
                 continue
             if not self._is_allowed_by_filters(domain, capability):
                 continue
+
+            # Apply composition.enabled_if guard
+            composition = metadata.get("composition")
+            if isinstance(composition, dict):
+                enabled_if = composition.get("enabled_if")
+                if not self._eval_enabled_if(intent, enabled_if):
+                    continue
+            else:
+                composition = {}
+
+            # Build compact representation — strip heavy fields from LLM payload
+            schema_props = (entry.get("schema") or {}).get("properties")
+            allowed_params = list(schema_props.keys()) if isinstance(schema_props, dict) else []
+
             candidates.append(
                 {
                     "domain": domain,
                     "capability": capability,
                     "description": entry.get("description", ""),
-                    "schema": entry.get("schema", {}),
-                    "metadata": metadata,
+                    "allowed_params": allowed_params,
+                    "composition": {
+                        "role": composition.get("role", ""),
+                        "priority": composition.get("priority", 0),
+                        "param_map": composition.get("param_map"),
+                        "static_params": composition.get("static_params"),
+                    },
                 }
             )
         return candidates
+
+    def _eval_enabled_if(
+        self,
+        intent: IntentOutput | ExecutionIntent,
+        condition: Any,
+    ) -> bool:
+        """Evaluate a composition ``enabled_if`` condition against the current intent context.
+
+        Supports the same condition forms as ``TaskDecomposer._eval_condition``:
+        bool, str (safe_eval_bool), and dict (all/any/not/path + exists/truthy/equals/in).
+        """
+        if condition is None:
+            return True
+        context: dict[str, Any] = {
+            "parameters": dict(intent.parameters or {}),
+            "query": intent.original_query,
+            "domain": getattr(intent, "domain", getattr(intent, "primary_domain", "")),
+            "capability": getattr(intent, "capability", ""),
+        }
+        if isinstance(condition, bool):
+            return condition
+        if isinstance(condition, str):
+            from shared.safe_eval import safe_eval_bool
+            return safe_eval_bool(condition, context, default=False)
+        if isinstance(condition, dict):
+            return self._eval_condition_dict(condition, context)
+        return False
+
+    def _eval_condition_dict(self, condition: dict[str, Any], context: dict[str, Any]) -> bool:
+        """Evaluate a dict-form condition (mirrors TaskDecomposer._eval_condition)."""
+        if "all" in condition and isinstance(condition["all"], list):
+            return all(
+                self._eval_enabled_if_raw(item, context) for item in condition["all"]
+            )
+        if "any" in condition and isinstance(condition["any"], list):
+            return any(
+                self._eval_enabled_if_raw(item, context) for item in condition["any"]
+            )
+        if "not" in condition:
+            return not self._eval_enabled_if_raw(condition["not"], context)
+
+        path = condition.get("path")
+        if not isinstance(path, str) or not path.strip():
+            return False
+        value = self._resolve_path(context, path)
+
+        if condition.get("exists") is True:
+            return value is not None
+        if condition.get("truthy") is True:
+            return bool(value)
+        if "equals" in condition:
+            return value == condition["equals"]
+        if "in" in condition and isinstance(condition["in"], list):
+            return value in condition["in"]
+        return False
+
+    def _eval_enabled_if_raw(self, condition: Any, context: dict[str, Any]) -> bool:
+        """Recursive helper for ``_eval_condition_dict``."""
+        if isinstance(condition, bool):
+            return condition
+        if isinstance(condition, str):
+            from shared.safe_eval import safe_eval_bool
+            return safe_eval_bool(condition, context, default=False)
+        if isinstance(condition, dict):
+            return self._eval_condition_dict(condition, context)
+        return False
+
+    def _resolve_path(self, payload: Any, path: str) -> Any:
+        current = payload
+        for part in path.split("."):
+            if isinstance(current, dict):
+                current = current.get(part)
+            else:
+                return None
+        return current
 
     def _is_allowed_by_filters(self, domain: str, capability: str) -> bool:
         if self.included_domains and domain not in self.included_domains:
@@ -425,48 +587,8 @@ class FunctionCallingPlanner:
         return None
 
     def _normalize_catalog(self, raw_catalog: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        normalized: list[dict[str, Any]] = []
-        for row in raw_catalog:
-            if not isinstance(row, dict):
-                continue
-            domain = str(row.get("domain", "")).strip()
-            capability = str(row.get("capability") or row.get("name") or "").strip()
-            if not domain or not capability:
-                continue
-
-            description = str(row.get("description", "")).strip()
-            schema = row.get("schema")
-            if not isinstance(schema, dict):
-                schema = row.get("input_schema")
-            if isinstance(schema, str):
-                try:
-                    parsed_schema = json.loads(schema)
-                    schema = parsed_schema if isinstance(parsed_schema, dict) else {}
-                except Exception:
-                    schema = {}
-            if not isinstance(schema, dict):
-                schema = {}
-
-            metadata = row.get("metadata", {})
-            if isinstance(metadata, str):
-                try:
-                    parsed_meta = json.loads(metadata)
-                    metadata = parsed_meta if isinstance(parsed_meta, dict) else {}
-                except Exception:
-                    metadata = {}
-            if not isinstance(metadata, dict):
-                metadata = {}
-
-            normalized.append(
-                {
-                    "domain": domain,
-                    "capability": capability,
-                    "description": description,
-                    "schema": schema,
-                    "metadata": metadata,
-                }
-            )
-        return normalized
+        """Delegate to the shared module-level normalizer."""
+        return normalize_capability_catalog(raw_catalog)
 
     def _step_signature(self, step: ExecutionStep) -> tuple[str, str, str]:
         domain = step.domain or ""

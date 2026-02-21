@@ -16,7 +16,7 @@ from typing import Any
 from memory.store import MemoryStore
 from models.selector import ModelSelector
 from shared.models import ExecutionIntent, IntentOutput, ExecutionPlan
-from planner.function_calling_planner import FunctionCallingPlanner
+from planner.function_calling_planner import FunctionCallingPlanner, normalize_capability_catalog
 from planner.goal_resolver import GoalResolver
 from planner.task_decomposer import TaskDecomposer
 
@@ -33,12 +33,13 @@ class PlannerService:
         memory_store: MemoryStore | None = None,
         goal_catalog_dict: dict[str, dict[str, Any]] | None = None,
     ):
-        self.capability_catalog = capability_catalog or []
+        _normalized = normalize_capability_catalog(capability_catalog or [])
+        self.capability_catalog = _normalized
         self.goal_resolver = GoalResolver(goal_catalog_dict=goal_catalog_dict)
-        self.task_decomposer = TaskDecomposer(capability_catalog=capability_catalog or [])
+        self.task_decomposer = TaskDecomposer(capability_catalog=_normalized)
         self.function_planner = FunctionCallingPlanner(
             model_selector=model_selector,
-            capability_catalog=capability_catalog or [],
+            capability_catalog=_normalized,
         )
         self.memory_store = memory_store
         self.last_memory_context: dict[str, Any] = {"enabled": False}
@@ -58,9 +59,10 @@ class PlannerService:
         self.memory_param_mappings = self._load_memory_param_mappings()
 
     def update_capability_catalog(self, capability_catalog: list[dict[str, Any]]) -> None:
-        self.capability_catalog = capability_catalog or []
-        self.task_decomposer.update_capability_catalog(capability_catalog)
-        self.function_planner.update_capability_catalog(capability_catalog)
+        normalized = normalize_capability_catalog(capability_catalog or [])
+        self.capability_catalog = normalized
+        self.task_decomposer.update_capability_catalog(normalized)
+        self.function_planner.update_capability_catalog(normalized)
 
     def update_goal_catalog(self, goal_catalog_dict: dict[str, dict[str, Any]]) -> None:
         """Update the goal resolver with fresh goal definitions."""
@@ -141,7 +143,7 @@ class PlannerService:
 
         applied: dict[str, Any] = {}
         resolved_values: dict[str, Any] = {}
-        for source_key, target_param in self.memory_param_mappings:
+        for source_key, target_param, safe_without_schema in self.memory_param_mappings:
             source_value = self._get_from_namespaces(source_key, namespaces)
             if source_value is None:
                 continue
@@ -150,9 +152,12 @@ class PlannerService:
 
             if target_param in params and params[target_param] not in (None, ""):
                 continue
-            if allowed_params is None and not self.memory_allow_without_schema:
-                continue
-            if allowed_params is not None and target_param not in allowed_params:
+            if allowed_params is None:
+                # No schema available for this capability.
+                # Inject only when the mapping is marked safe or the global override is on.
+                if not safe_without_schema and not self.memory_allow_without_schema:
+                    continue
+            elif target_param not in allowed_params:
                 continue
             params[target_param] = normalized
             applied[target_param] = normalized
@@ -188,15 +193,27 @@ class PlannerService:
             "search_hits": search_hits,
         }
 
-    def _load_memory_param_mappings(self) -> list[tuple[str, str]]:
-        default_map: list[tuple[str, str]] = [
-            ("preferred_market", "market"),
-            ("risk_mode", "risk_mode"),
-            ("wheel_active", "wheel_active"),
-            ("last_wheel_operation", "last_wheel_operation"),
-            ("wheel_last_operation", "last_wheel_operation"),
-            ("available_capital", "capital"),
-            ("capital_available", "capital"),
+    def _load_memory_param_mappings(self) -> list[tuple[str, str, bool]]:
+        """Load memory-key → parameter mappings.
+
+        Each entry is ``(source_key, target_param, safe_without_schema)``.
+        When ``safe_without_schema=True``, the value is injected even when the
+        capability has no JSON-Schema ``properties`` block — appropriate for
+        broadly-applicable context values (market, risk mode, capital).
+        When ``False``, injection requires the capability schema to explicitly
+        list the parameter (conservative default).
+
+        The JSON env format supports an optional ``"safe_without_schema"`` field
+        (dict or list format); missing field defaults to ``False`` (backward compat).
+        """
+        default_map: list[tuple[str, str, bool]] = [
+            ("preferred_market",      "market",               True),
+            ("risk_mode",             "risk_mode",            True),
+            ("wheel_active",          "wheel_active",         True),
+            ("last_wheel_operation",  "last_wheel_operation", False),
+            ("wheel_last_operation",  "last_wheel_operation", False),
+            ("available_capital",     "capital",              True),
+            ("capital_available",     "capital",              True),
         ]
         raw = os.getenv("PLANNER_MEMORY_PARAM_MAP_JSON", "").strip()
         if not raw:
@@ -207,21 +224,22 @@ class PlannerService:
             logger.warning("Invalid PLANNER_MEMORY_PARAM_MAP_JSON, using defaults.")
             return default_map
 
-        mappings: list[tuple[str, str]] = []
+        mappings: list[tuple[str, str, bool]] = []
         if isinstance(payload, dict):
             for source, target in payload.items():
                 source_k = str(source).strip()
                 target_k = str(target).strip()
                 if source_k and target_k:
-                    mappings.append((source_k, target_k))
+                    mappings.append((source_k, target_k, False))
         elif isinstance(payload, list):
             for item in payload:
                 if not isinstance(item, dict):
                     continue
                 source_k = str(item.get("memory_key", "")).strip()
                 target_k = str(item.get("param", "")).strip()
+                safe = bool(item.get("safe_without_schema", False))
                 if source_k and target_k:
-                    mappings.append((source_k, target_k))
+                    mappings.append((source_k, target_k, safe))
 
         if not mappings:
             return default_map
@@ -239,22 +257,15 @@ class PlannerService:
         return None
 
     def _allowed_parameter_names(self, domain: str, capability: str) -> set[str] | None:
+        """Return the set of allowed parameter names for a capability, or None if schema has no properties.
+
+        The catalog is pre-normalized (see normalize_capability_catalog), so ``schema`` is always
+        a dict and ``capability`` is always the canonical key — no fallback parsing needed.
+        """
         for entry in self.capability_catalog:
-            if str(entry.get("domain", "")) != domain or str(entry.get("capability", "")) != capability:
+            if entry.get("domain") != domain or entry.get("capability") != capability:
                 continue
-
-            schema = entry.get("schema")
-            if not isinstance(schema, dict):
-                schema = entry.get("input_schema")
-            if isinstance(schema, str):
-                try:
-                    parsed = json.loads(schema)
-                    schema = parsed if isinstance(parsed, dict) else {}
-                except Exception:
-                    schema = {}
-            if not isinstance(schema, dict):
-                schema = {}
-
+            schema = entry.get("schema") or {}
             properties = schema.get("properties")
             if isinstance(properties, dict):
                 return set(properties.keys())

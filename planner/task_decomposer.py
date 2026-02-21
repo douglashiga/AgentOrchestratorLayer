@@ -9,10 +9,13 @@ The decomposer is metadata-driven:
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from shared.models import ExecutionIntent, ExecutionPlan, ExecutionStep, IntentOutput
 from shared.safe_eval import safe_eval_bool
+
+logger = logging.getLogger(__name__)
 
 
 class TaskDecomposer:
@@ -173,7 +176,28 @@ class TaskDecomposer:
                 step_params = dict(default_params)
             depends_on = raw.get("depends_on")
             if isinstance(depends_on, list) and depends_on:
-                parsed_depends = [int(item) for item in depends_on if isinstance(item, int)]
+                # Accept both int and numeric-string depends_on values
+                parsed_depends_raw: list[int] = []
+                for item in depends_on:
+                    if isinstance(item, int):
+                        parsed_depends_raw.append(item)
+                    elif isinstance(item, str):
+                        try:
+                            parsed_depends_raw.append(int(item))
+                        except ValueError:
+                            pass
+                # Validate that every ref points to an already-built step
+                valid_ids = {s.id for s in steps}
+                invalid_refs = [r for r in parsed_depends_raw if r not in valid_ids]
+                if invalid_refs:
+                    logger.warning(
+                        "_plan_from_execution_steps_hint: step %d has invalid depends_on refs %s "
+                        "(valid ids so far: %s); ignoring invalid refs",
+                        idx,
+                        invalid_refs,
+                        sorted(valid_ids),
+                    )
+                parsed_depends = [r for r in parsed_depends_raw if r in valid_ids]
             else:
                 parsed_depends = [steps[-1].id] if steps else []
 
@@ -181,6 +205,9 @@ class TaskDecomposer:
             output_key_str = str(output_key).strip() if output_key is not None else None
             if output_key_str == "":
                 output_key_str = None
+            # Assign a predictable default when no output_key is provided
+            if output_key_str is None:
+                output_key_str = "primary" if idx == 1 else f"step_{idx}"
 
             steps.append(
                 ExecutionStep(

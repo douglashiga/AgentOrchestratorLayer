@@ -31,6 +31,7 @@ class IntentAdapter:
     ):
         self.model_selector = model_selector
         self.goal_catalog = goal_catalog or []
+        self._goal_lookup: dict[str, dict[str, Any]] | None = None  # lazy cache, reset on catalog update
 
         intent_timeout_seconds = float(os.getenv("INTENT_MODEL_TIMEOUT_SECONDS", "20"))
         intent_max_retries = int(os.getenv("INTENT_MODEL_MAX_RETRIES", "3"))
@@ -49,6 +50,7 @@ class IntentAdapter:
     def update_goal_catalog(self, goal_catalog: list[dict[str, Any]]) -> None:
         """Update runtime goal catalog used by dynamic system prompt."""
         self.goal_catalog = goal_catalog or []
+        self._goal_lookup = None  # invalidate cached lookup
         logger.info("IntentAdapter updated with %d goal catalog entries", len(self.goal_catalog))
 
     def extract(
@@ -108,6 +110,29 @@ class IntentAdapter:
         except (TypeError, ValueError):
             confidence = 0.0
 
+        # Clamp confidence to valid range
+        confidence = max(0.0, min(1.0, confidence))
+
+        # Validate domain/goal against the catalog (guard: skip if catalog is empty)
+        goal_lookup = self._build_goal_lookup()
+        key = f"{domain}:{goal}"
+        goal_item: dict[str, Any] | None = goal_lookup.get(key) if goal_lookup else None
+        if goal_item is None and goal_lookup:
+            logger.warning(
+                "IntentAdapter: LLM returned unknown goal '%s', falling back to '%s:%s'",
+                key,
+                fallback_domain,
+                fallback_goal,
+            )
+            domain, goal = fallback_domain, fallback_goal
+            confidence = min(confidence, 0.5)
+            goal_item = goal_lookup.get(f"{domain}:{goal}")
+
+        # Sanitize entities against the goal's entities_schema
+        entities_schema = goal_item.get("entities_schema", {}) if goal_item else {}
+        if isinstance(entities_schema, dict) and entities_schema:
+            entities = self._sanitize_entities(entities, entities_schema)
+
         return IntentOutput(
             primary_domain=domain,
             goal=goal,
@@ -115,6 +140,57 @@ class IntentAdapter:
             confidence=confidence,
             original_query=input_text,
         )
+
+    # ─── Goal catalog lookup and entity sanitization ─────────
+
+    def _build_goal_lookup(self) -> dict[str, dict[str, Any]]:
+        """Build (and cache) a ``domain:goal`` → goal_item lookup from the current catalog.
+
+        Returns an empty dict when the catalog is empty so callers can skip validation safely.
+        """
+        if self._goal_lookup is None:
+            self._goal_lookup = {
+                f"{item.get('domain', '')}:{item.get('goal', '')}": item
+                for item in self.goal_catalog
+                if isinstance(item, dict) and item.get("domain") and item.get("goal")
+            }
+        return self._goal_lookup
+
+    def _sanitize_entities(
+        self,
+        entities: dict[str, Any],
+        entities_schema: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Sanitize entities against the goal's entities_schema.
+
+        Strategy:
+        - For keys **declared in the schema** as ``enum``: drop the value if it is not in
+          the declared ``values`` list (prevent bad enum values from reaching GoalResolver).
+        - All other keys (string-typed declared fields, and keys *not* in the schema) are
+          kept as-is — ``entities_schema`` is a minimum declaration, not an exhaustive
+          allowlist. Cross-cutting operational params like ``notify`` or ``compose`` are
+          intentionally absent from schemas but must pass through to the planner.
+        - Never raises; always returns a dict.
+        """
+        clean: dict[str, Any] = dict(entities)  # start with all keys
+        for key, spec in entities_schema.items():
+            if key not in clean:
+                continue
+            if not isinstance(spec, dict):
+                continue
+            field_type = str(spec.get("type", "string")).strip().lower()
+            if field_type == "enum":
+                value = clean[key]
+                allowed_values = spec.get("values")
+                if isinstance(allowed_values, list) and value not in allowed_values:
+                    logger.debug(
+                        "IntentAdapter: dropping entity '%s'='%s' — not in enum values %s",
+                        key,
+                        value,
+                        allowed_values,
+                    )
+                    del clean[key]
+        return clean
 
     # ─── Fallback: deterministic goal hint matching ───────────
 

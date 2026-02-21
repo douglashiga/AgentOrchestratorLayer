@@ -80,12 +80,22 @@ class GoalResolver:
                 goal_key=goal_key,
             )
             if resolved is not None:
-                logger.info(
-                    "GoalResolver: %s → %s (resolved via entities_schema)",
-                    goal_key,
-                    resolved,
-                )
-                return intent.to_execution_intent(resolved_capability=resolved)
+                if isinstance(resolved, list) and len(resolved) > 1:
+                    # Multi-capability: inject _execution_steps for the TaskDecomposer
+                    logger.info(
+                        "GoalResolver: %s → %s (multi-capability via _execution_steps)",
+                        goal_key,
+                        resolved,
+                    )
+                    return self._build_multi_step_intent(intent, resolved)
+                else:
+                    single = resolved if isinstance(resolved, str) else str(resolved[0]).strip()
+                    logger.info(
+                        "GoalResolver: %s → %s (resolved via entities_schema)",
+                        goal_key,
+                        single,
+                    )
+                    return intent.to_execution_intent(resolved_capability=single)
 
         # Fallback: first capability
         fallback = str(capabilities[0]).strip()
@@ -104,12 +114,13 @@ class GoalResolver:
         entities: dict[str, Any],
         entities_schema: dict[str, Any],
         goal_key: str,
-    ) -> str | None:
+    ) -> list[str] | str | None:
         """Use entities_schema rules to pick the right capability from multiple options.
 
-        Supports:
-        - enum fields with capability_map: maps entity value → capability name
-        - "BOTH" / "ALL" values that expand to multiple capabilities (returns first + flags multi)
+        Returns:
+        - ``str`` — a single capability name (no multi-step needed)
+        - ``list[str]`` — ordered list of capabilities to run as parallel steps
+        - ``None`` — no mapping found; caller falls back to first capability
         """
         for entity_name, schema_def in entities_schema.items():
             if not isinstance(schema_def, dict):
@@ -143,18 +154,38 @@ class GoalResolver:
             if mapped is None:
                 continue
 
-            # mapped can be a string (single capability) or list (multi-capability plan)
             if isinstance(mapped, str):
                 resolved = str(mapped).strip()
-                if resolved in capabilities or resolved == "_all":
-                    if resolved == "_all":
-                        # Return all capabilities — caller will build multi-step plan
-                        return None
+                if resolved == "_all":
+                    # Return ALL capabilities in the goal's declared list
+                    return [str(c).strip() for c in capabilities if str(c).strip()]
+                if resolved in capabilities:
                     return resolved
             elif isinstance(mapped, list) and mapped:
-                # Multi-capability: return first, planner will handle expansion
-                first = str(mapped[0]).strip()
-                if first in capabilities:
-                    return first
+                # Explicit ordered list from capability_map
+                valid = [str(c).strip() for c in mapped if str(c).strip()]
+                if valid:
+                    return valid  # may be single- or multi-item
 
         return None
+
+    def _build_multi_step_intent(self, intent: IntentOutput, resolved_capabilities: list[str]) -> ExecutionIntent:
+        """Build an ExecutionIntent with ``_execution_steps`` for multi-capability resolution.
+
+        The primary ``capability`` is set to the first in the list so that downstream
+        metadata lookups (e.g. composition rules) still have a reference point.
+        ``_execution_steps`` is injected into ``parameters`` so that
+        ``TaskDecomposer._plan_from_execution_steps_hint`` builds the full multi-step plan.
+        """
+        extra_params = dict(intent.entities or {})
+        extra_params["_execution_steps"] = [
+            {"capability": cap, "domain": intent.primary_domain}
+            for cap in resolved_capabilities
+        ]
+        return ExecutionIntent(
+            domain=intent.primary_domain,
+            capability=resolved_capabilities[0],
+            confidence=intent.confidence,
+            parameters=extra_params,
+            original_query=intent.original_query,
+        )
