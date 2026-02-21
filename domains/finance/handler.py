@@ -20,6 +20,14 @@ from domains.finance.context import ContextResolver
 from domains.finance.core import StrategyCore
 from domains.finance.symbol_resolver import SymbolResolver
 from domains.finance.manifest_loader import ManifestLoader
+from domains.finance.parameter_resolver import (
+    ParameterResolver,
+    ParameterResolutionConfig,
+    SymbolSubResolver,
+    SymbolListSubResolver,
+)
+from domains.finance.parameter_resolver_db import ParameterResolverDB
+from domains.finance.parameter_seed import seed_parameter_database
 from skills.gateway import SkillGateway
 from domains.finance.schemas import (
     TopGainersInput, TopLosersInput, StockPriceInput,
@@ -46,6 +54,7 @@ class FinanceDomainHandler:
         skill_gateway: SkillGateway,
         registry: Any = None,
         symbol_resolver: SymbolResolver | None = None,
+        parameter_resolver: ParameterResolver | None = None,
         model_selector: Any = None,
         finance_server_url: str = "http://localhost:8001",
     ):
@@ -68,6 +77,27 @@ class FinanceDomainHandler:
                 enable_llm=bool(model_selector),
             )
 
+        # Initialize parameter resolver (DB-backed deterministic + LLM fallback)
+        if parameter_resolver:
+            self._parameter_resolver = parameter_resolver
+        else:
+            pr_db = ParameterResolverDB()
+            seed_parameter_database(pr_db)
+            self._parameter_resolver = ParameterResolver(
+                db=pr_db,
+                model_selector=model_selector,
+                config=ParameterResolutionConfig(
+                    enable_llm=bool(model_selector),
+                ),
+            )
+            # Register symbol sub-resolvers
+            self._parameter_resolver.register_resolver(
+                "symbol", SymbolSubResolver(self._symbol_resolver)
+            )
+            self._parameter_resolver.register_resolver(
+                "symbols", SymbolListSubResolver(self._symbol_resolver)
+            )
+
     async def execute(self, intent: IntentOutput | ExecutionIntent) -> DomainOutput:
         """
         Execute finance capability with type-safe dispatch.
@@ -75,8 +105,8 @@ class FinanceDomainHandler:
         matching the intent capability.
         """
         try:
-            # 0. Apply defaults without mutating shared state
-            resolved_params = self._resolve_parameters(intent, dict(intent.parameters))
+            # 0. Start with a copy of parameters (no mutation of shared state)
+            resolved_params = dict(intent.parameters)
 
             # 1. Dynamic Dispatch to Typed Methods
             method_name = intent.capability
@@ -441,23 +471,8 @@ class FinanceDomainHandler:
         
         return await self._run_pipeline(intent, resolved_params)
 
-    def _resolve_parameters(self, intent: IntentOutput | ExecutionIntent, params: dict) -> dict:
-        """
-        Apply default values from metadata to missing parameters.
-        Mutates `params` in-place.
-        """
-        metadata = self._get_capability_metadata(intent.capability)
-        if not metadata:
-            return params
-
-        # Apply defaults
-        for key, value in metadata.items():
-            if key.startswith("default_"):
-                param_name = key.replace("default_", "")
-                if param_name not in params or params[param_name] is None:
-                    params[param_name] = value
-                    logger.info("Applied default parameter: %s=%s", param_name, value)
-        return params
+    # _resolve_parameters removed — logic absorbed by ParameterResolver
+    # (defaults are applied by DefaultParameterSubResolver and _apply_pre_flow fallback)
 
     def _get_capability_metadata(self, capability: str) -> dict[str, Any]:
         if not self.registry:
@@ -472,11 +487,34 @@ class FinanceDomainHandler:
         metadata: dict[str, Any],
         original_query: str,
     ) -> dict[str, Any] | DomainOutput:
-        flow_steps = self._get_flow_steps(capability=capability, params=params, metadata=metadata)
-        if not flow_steps:
-            return params
-
         resolved = dict(params)
+
+        # Phase 1: Resolve all non-symbol parameters via ParameterResolver
+        # (symbols are handled by registered sub-resolvers but the handler's
+        #  flow steps below provide more sophisticated symbol resolution with
+        #  search capabilities and query text inference as fallback)
+        parameter_specs = metadata.get("parameter_specs", {})
+        if isinstance(parameter_specs, dict) and parameter_specs:
+            # Apply defaults and resolve textual/enum params via DB/LLM
+            pr_result = self._parameter_resolver.resolve_all(
+                params=resolved,
+                parameter_specs=parameter_specs,
+                capability=capability,
+                original_query=original_query,
+            )
+            if isinstance(pr_result, DomainOutput):
+                return pr_result
+            resolved = pr_result
+        else:
+            # No parameter_specs — apply legacy metadata defaults
+            for key, value in metadata.items():
+                if key.startswith("default_"):
+                    param_name = key.replace("default_", "")
+                    if param_name not in resolved or resolved[param_name] is None:
+                        resolved[param_name] = value
+
+        # Phase 2: Symbol resolution via flow steps (search capabilities, query inference)
+        flow_steps = self._get_flow_steps(capability=capability, params=resolved, metadata=metadata)
         for step in flow_steps:
             step_type = str(step.get("type", "")).strip()
             if step_type == "resolve_symbol":

@@ -45,6 +45,16 @@ MARKET_ALIASES = {
     "HONG KONG": "HK",
     "HONGKONG": "HK",
     "HKEX": "HK",
+    # Extended Portuguese / English forms
+    "ESTADOS UNIDOS": "US",
+    "AMERICA": "US",
+    "AMERICANO": "US",
+    "MERCADO AMERICANO": "US",
+    "BRASILEIRO": "BR",
+    "MERCADO BRASILEIRO": "BR",
+    "SUECO": "SE",
+    "MERCADO SUECO": "SE",
+    "OMX": "SE",
 }
 
 SYMBOL_ALIASES = {
@@ -144,6 +154,26 @@ async def lifespan(app: FastAPI):
         enable_llm=False,  # LLM fallback disabled in server (only in tests)
     )
 
+    # Initialize Parameter Resolver (DB-backed deterministic + LLM fallback)
+    from domains.finance.parameter_resolver_db import ParameterResolverDB
+    from domains.finance.parameter_resolver import (
+        ParameterResolver,
+        ParameterResolutionConfig,
+        SymbolSubResolver,
+        SymbolListSubResolver,
+    )
+    from domains.finance.parameter_seed import seed_parameter_database
+
+    pr_db = ParameterResolverDB()
+    seed_parameter_database(pr_db)
+    parameter_resolver = ParameterResolver(
+        db=pr_db,
+        model_selector=None,  # LLM fallback disabled in standalone server mode
+        config=ParameterResolutionConfig(enable_llm=False),
+    )
+    parameter_resolver.register_resolver("symbol", SymbolSubResolver(symbol_resolver))
+    parameter_resolver.register_resolver("symbols", SymbolListSubResolver(symbol_resolver))
+
     # Initialize Domain Handler with local capabilities for metadata-driven logic
     from registry.domain_registry import HandlerRegistry
     mock_registry = HandlerRegistry()
@@ -155,11 +185,12 @@ async def lifespan(app: FastAPI):
         cap_metadata.setdefault("description", cap.get("description", ""))
         mock_registry.register_capability(cap["name"], None, metadata=cap_metadata)
 
-    # Pass symbol_resolver with production aliases to handler
+    # Pass symbol_resolver and parameter_resolver to handler
     handler = FinanceDomainHandler(
         skill_gateway=skill_gateway,
         registry=mock_registry,
         symbol_resolver=symbol_resolver,
+        parameter_resolver=parameter_resolver,
     )
 
     yield
@@ -179,9 +210,13 @@ RANKING_PERIOD_ALIASES = {
     "AGORA": "1d",
     "TODAY": "1d",
     "ULTIMO DIA": "1d",
+    "DIA": "1d",
+    "DAY": "1d",
     "SEMANA": "5d",
     "SEMANAL": "5d",
     "ULTIMOS DIAS": "5d",
+    "WEEK": "5d",
+    "LAST WEEK": "5d",
     "MÊS": "1mo",
     "MES": "1mo",
     "MENSAL": "1mo",
@@ -189,27 +224,48 @@ RANKING_PERIOD_ALIASES = {
     "ULTIMOS MES": "1mo",
     "ULTIMO MÊS": "1mo",
     "ULTIMOS MÊS": "1mo",
+    "MONTH": "1mo",
+    "LAST MONTH": "1mo",
     "TRIMESTRE": "3mo",
     "ULTIMO TRIMESTRE": "3mo",
+    "QUARTER": "3mo",
+    "LAST QUARTER": "3mo",
     "ANO": "1y",
     "ANUAL": "1y",
     "ULTIMO ANO": "1y",
+    "YEAR": "1y",
+    "LAST YEAR": "1y",
 }
 
 HISTORICAL_PERIOD_ALIASES = {
     "HOJE": "1d",
+    "TODAY": "1d",
     "1 DIA": "1d",
+    "1 DAY": "1d",
     "5 DIAS": "5d",
+    "5 DAYS": "5d",
     "SEMANA": "5d",
+    "WEEK": "5d",
+    "1 WEEK": "5d",
     "1 MÊS": "1mo",
     "1 MES": "1mo",
     "MÊS": "1mo",
     "MES": "1mo",
+    "1 MONTH": "1mo",
+    "MONTH": "1mo",
     "3 MESES": "3mo",
+    "3 MONTHS": "3mo",
     "6 MESES": "6mo",
+    "6 MONTHS": "6mo",
+    "SEMESTRE": "6mo",
     "1 ANO": "1y",
+    "ANO": "1y",
+    "1 YEAR": "1y",
+    "YEAR": "1y",
     "2 ANOS": "2y",
+    "2 YEARS": "2y",
     "5 ANOS": "5y",
+    "5 YEARS": "5y",
     "YTD": "ytd",
     "MAX": "max",
 }
@@ -218,22 +274,32 @@ INTERVAL_ALIASES = {
     "DIARIO": "1d",
     "DIÁRIO": "1d",
     "DIA": "1d",
+    "DAILY": "1d",
+    "DAY": "1d",
     "SEMANAL": "1wk",
     "SEMANA": "1wk",
+    "WEEKLY": "1wk",
+    "WEEK": "1wk",
     "MENSAL": "1mo",
     "MES": "1mo",
     "MÊS": "1mo",
+    "MONTHLY": "1mo",
+    "MONTH": "1mo",
 }
 
 SIGNAL_TYPE_ALIASES = {
     "RSI OVERSOLD": "rsi_oversold",
     "RSI SOBREVENDIDO": "rsi_oversold",
     "SOBREVENDIDO": "rsi_oversold",
+    "OVERSOLD": "rsi_oversold",
     "RSI OVERBOUGHT": "rsi_overbought",
     "RSI SOBRECOMPRADO": "rsi_overbought",
     "SOBRECOMPRADO": "rsi_overbought",
+    "OVERBOUGHT": "rsi_overbought",
     "MACD CROSS": "macd_cross",
     "CRUZAMENTO MACD": "macd_cross",
+    "MACD": "macd_cross",
+    "CRUZAMENTO": "macd_cross",
 }
 
 MARKET_PARAM_SPEC = {
@@ -434,16 +500,69 @@ METADATA_OVERRIDES = {
             "market": dict(MARKET_PARAM_SPEC),
             "sector": {
                 "type": "string",
-                "examples": ["technology", "financials", "energy"],
+                "examples": ["technology", "financials", "energy", "healthcare", "consumer_defensive"],
+                "enum": [
+                    "technology", "financials", "energy", "healthcare",
+                    "consumer_defensive", "consumer_cyclical", "industrials",
+                    "basic_materials", "communication_services", "utilities",
+                    "real_estate",
+                ],
+                "aliases": {
+                    "TECNOLOGIA": "technology",
+                    "TECH": "technology",
+                    "FINANCEIRO": "financials",
+                    "FINANCEIRAS": "financials",
+                    "BANCOS": "financials",
+                    "ENERGIA": "energy",
+                    "SAUDE": "healthcare",
+                    "SAÚDE": "healthcare",
+                    "HEALTH": "healthcare",
+                    "CONSUMO DEFENSIVO": "consumer_defensive",
+                    "CONSUMO BASICO": "consumer_defensive",
+                    "CONSUMO BÁSICO": "consumer_defensive",
+                    "CONSUMO": "consumer_cyclical",
+                    "CONSUMO CICLICO": "consumer_cyclical",
+                    "CONSUMO CÍCLICO": "consumer_cyclical",
+                    "INDUSTRIA": "industrials",
+                    "INDÚSTRIA": "industrials",
+                    "INDUSTRIAL": "industrials",
+                    "MATERIAIS": "basic_materials",
+                    "MATERIAIS BASICOS": "basic_materials",
+                    "MATERIAIS BÁSICOS": "basic_materials",
+                    "COMUNICACAO": "communication_services",
+                    "COMUNICAÇÃO": "communication_services",
+                    "TELECOM": "communication_services",
+                    "UTILIDADES": "utilities",
+                    "UTILITIES": "utilities",
+                    "IMOBILIARIO": "real_estate",
+                    "IMOBILIÁRIO": "real_estate",
+                    "REAL ESTATE": "real_estate",
+                },
             },
             "sort_by": {
                 "type": "string",
                 "default": "market_cap",
+                "enum": ["market_cap", "pe_ratio", "dividend_yield", "price", "change_pct", "volume"],
                 "aliases": {
                     "VALOR DE MERCADO": "market_cap",
                     "MARKET CAP": "market_cap",
+                    "CAPITALIZACAO": "market_cap",
+                    "CAPITALIZAÇÃO": "market_cap",
                     "P/L": "pe_ratio",
+                    "P/E": "pe_ratio",
+                    "PE": "pe_ratio",
+                    "PE RATIO": "pe_ratio",
                     "DY": "dividend_yield",
+                    "DIVIDENDO": "dividend_yield",
+                    "DIVIDEND YIELD": "dividend_yield",
+                    "DIVIDENDOS": "dividend_yield",
+                    "PRECO": "price",
+                    "PREÇO": "price",
+                    "PRICE": "price",
+                    "VARIACAO": "change_pct",
+                    "VARIAÇÃO": "change_pct",
+                    "CHANGE": "change_pct",
+                    "VOLUME": "volume",
                 },
                 "examples": ["market_cap", "pe_ratio", "dividend_yield"],
             },
@@ -659,6 +778,19 @@ METADATA_OVERRIDES = {
                 "type": "string",
                 "default": "2y",
                 "enum": ["1y", "2y", "5y"],
+                "aliases": {
+                    "1 ANO": "1y",
+                    "ANO": "1y",
+                    "ULTIMO ANO": "1y",
+                    "1 YEAR": "1y",
+                    "YEAR": "1y",
+                    "2 ANOS": "2y",
+                    "DOIS ANOS": "2y",
+                    "2 YEARS": "2y",
+                    "5 ANOS": "5y",
+                    "CINCO ANOS": "5y",
+                    "5 YEARS": "5y",
+                },
                 "examples": ["2y", "5y"],
             },
         },
@@ -764,6 +896,22 @@ METADATA_OVERRIDES = {
                 "type": "string",
                 "default": "1D",
                 "enum": ["1D", "5D"],
+                "aliases": {
+                    "HOJE": "1D",
+                    "TODAY": "1D",
+                    "DIA": "1D",
+                    "DIARIO": "1D",
+                    "DIÁRIO": "1D",
+                    "DAILY": "1D",
+                    "1D": "1D",
+                    "SEMANA": "5D",
+                    "SEMANAL": "5D",
+                    "WEEK": "5D",
+                    "WEEKLY": "5D",
+                    "5 DIAS": "5D",
+                    "5 DAYS": "5D",
+                    "5D": "5D",
+                },
                 "examples": ["1D", "5D"],
             },
             "limit": {
@@ -859,6 +1007,18 @@ METADATA_OVERRIDES = {
                 "type": "string",
                 "default": "1y",
                 "enum": ["6mo", "1y", "2y"],
+                "aliases": {
+                    "6 MESES": "6mo",
+                    "SEMESTRE": "6mo",
+                    "6 MONTHS": "6mo",
+                    "1 ANO": "1y",
+                    "ANO": "1y",
+                    "1 YEAR": "1y",
+                    "YEAR": "1y",
+                    "2 ANOS": "2y",
+                    "DOIS ANOS": "2y",
+                    "2 YEARS": "2y",
+                },
                 "examples": ["1y", "6mo"],
             },
         },

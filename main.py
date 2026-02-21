@@ -438,6 +438,8 @@ def _reroute_general_chat_from_registry(intent, registry, params: dict[str, Any]
 
 
 def _normalize_parameter_value(value: Any, spec: dict[str, Any]) -> Any:
+    # TODO(deprecated): Finance domain now uses ParameterResolver (DB + LLM fallback).
+    # This function is kept for non-finance domains. Remove once all domains migrate.
     if isinstance(value, list):
         item_spec = spec.get("items") if isinstance(spec.get("items"), dict) else spec
         return [_normalize_parameter_value(item, item_spec) for item in value]
@@ -507,6 +509,8 @@ def _normalize_parameter_value(value: Any, spec: dict[str, Any]) -> Any:
 
 
 def _infer_value_from_symbol_suffix(params: dict[str, Any], spec: dict[str, Any]) -> Any:
+    # TODO(deprecated): Finance domain now uses ParameterResolver._resolve_via_symbol_suffix.
+    # This function is kept for non-finance domains. Remove once all domains migrate.
     infer_map = spec.get("infer_from_symbol_suffix")
     if not isinstance(infer_map, dict):
         return None
@@ -536,6 +540,9 @@ def _infer_value_from_symbol_suffix(params: dict[str, Any], spec: dict[str, Any]
 
 
 def _apply_parameter_contracts(params: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
+    # NOTE: For finance domain, this is effectively a no-op because the handler's
+    # ParameterResolver resolves all params before this is reached.
+    # Kept for non-finance domains that may still use parameter_specs normalization.
     parameter_specs = metadata.get("parameter_specs")
     if not isinstance(parameter_specs, dict):
         return params
