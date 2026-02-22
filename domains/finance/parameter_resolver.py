@@ -16,6 +16,7 @@ import logging
 import re
 import unicodedata
 from abc import ABC, abstractmethod
+from datetime import datetime, timedelta
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -259,6 +260,15 @@ class DefaultParameterSubResolver(SubResolver):
         # smallest enum value that fully covers the requested duration.
         # Example: user says "3 dias", enum is [1d, 5d, 1mo] → returns 5d.
         result = self._resolve_via_nearest_period(parameter_name, normalized, raw_value, spec)
+        if result:
+            return result
+
+        # Step 4c: Date expression resolver — for parameters with
+        # format="date" or type="date", resolve natural language date
+        # expressions to YYYY-MM-DD.  Dynamic (not DB-based) because
+        # "essa semana" means a different date every week.
+        # Example: "dessa semana" → "2026-02-27" (next Friday).
+        result = self._resolve_via_date_expression(parameter_name, raw_value, spec)
         if result:
             return result
 
@@ -525,6 +535,157 @@ class DefaultParameterSubResolver(SubResolver):
             resolved_value=largest_val,
             confidence=0.85,
             source="nearest_period",
+        )
+
+    # ── Date expression resolution ───────────────────────────────────
+
+    # Parameter names that are treated as dates even without explicit format spec
+    _DATE_PARAM_NAMES = {"expiry", "expiry_date", "date", "start_date", "end_date"}
+
+    @staticmethod
+    def _next_weekday(start: "datetime", weekday: int) -> "datetime":
+        """Return the next occurrence of `weekday` (0=Mon … 4=Fri) on or after `start`."""
+        days_ahead = (weekday - start.weekday()) % 7
+        if days_ahead == 0 and start.weekday() > 4:
+            # If today is a weekend and target is a weekday, jump to next week
+            days_ahead = 7
+        return start + timedelta(days=days_ahead)
+
+    @staticmethod
+    def _last_business_day_of_month(year: int, month: int) -> "datetime":
+        """Return the last weekday (Mon-Fri) of the given month."""
+        if month == 12:
+            last = datetime(year + 1, 1, 1) - timedelta(days=1)
+        else:
+            last = datetime(year, month + 1, 1) - timedelta(days=1)
+        while last.weekday() > 4:  # Sat=5, Sun=6
+            last -= timedelta(days=1)
+        return last
+
+    def _resolve_relative_date(self, text: str) -> str | None:
+        """
+        Resolve a natural-language date expression to YYYY-MM-DD.
+
+        For option-expiry contexts the reference weekday is Friday (standard
+        weekly options expiration).
+
+        Handles:
+          'hoje/today'                          → today
+          'amanha/tomorrow'                     → tomorrow
+          'dessa semana/esta semana/this week'  → this Friday
+          'semanal'                             → this Friday
+          'semana que vem/next week'             → next Friday
+          'fim do mes/end of month'             → last business day of month
+          'proximo mes/next month'              → last business day of next month
+        """
+        today = datetime.now()
+        cleaned = unicodedata.normalize("NFKC", text.strip()).lower()
+
+        # Already YYYY-MM-DD? → pass through
+        try:
+            datetime.strptime(cleaned, "%Y-%m-%d")
+            return cleaned
+        except ValueError:
+            pass
+
+        # Today
+        if cleaned in ("hoje", "today"):
+            return today.strftime("%Y-%m-%d")
+
+        # Tomorrow
+        if cleaned in ("amanha", "amanhã", "tomorrow"):
+            return (today + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        # This week → Friday of current week
+        this_week_kws = (
+            "essa semana", "esta semana", "dessa semana",
+            "this week", "semanal", "weekly", "da semana",
+        )
+        if any(kw in cleaned for kw in this_week_kws):
+            friday = self._next_weekday(today, 4)  # 4 = Friday
+            return friday.strftime("%Y-%m-%d")
+
+        # Next week → Friday of next week
+        next_week_kws = (
+            "semana que vem", "proxima semana", "próxima semana",
+            "next week",
+        )
+        if any(kw in cleaned for kw in next_week_kws):
+            # Go to next Monday then find Friday
+            next_monday = self._next_weekday(today + timedelta(days=1), 0)
+            friday = next_monday + timedelta(days=4)
+            return friday.strftime("%Y-%m-%d")
+
+        # This month / end of month
+        this_month_kws = (
+            "fim do mes", "fim do mês", "esse mes", "este mes",
+            "este mês", "this month", "end of month",
+        )
+        if any(kw in cleaned for kw in this_month_kws):
+            last_bd = self._last_business_day_of_month(today.year, today.month)
+            return last_bd.strftime("%Y-%m-%d")
+
+        # Next month
+        next_month_kws = (
+            "proximo mes", "próximo mês", "mes que vem", "mês que vem",
+            "next month",
+        )
+        if any(kw in cleaned for kw in next_month_kws):
+            if today.month == 12:
+                ny, nm = today.year + 1, 1
+            else:
+                ny, nm = today.year, today.month + 1
+            last_bd = self._last_business_day_of_month(ny, nm)
+            return last_bd.strftime("%Y-%m-%d")
+
+        # N days/weeks/months from now  (e.g. "em 2 semanas", "in 3 days")
+        duration_days = self._parse_user_duration_to_days(cleaned)
+        if duration_days is not None:
+            target = today + timedelta(days=int(duration_days))
+            # Snap to Friday if it falls on weekend
+            if target.weekday() == 5:  # Saturday
+                target += timedelta(days=5)  # → next Thursday? No, let's go to Friday
+                target = self._next_weekday(target, 4)
+            elif target.weekday() == 6:  # Sunday
+                target = self._next_weekday(target, 4)
+            return target.strftime("%Y-%m-%d")
+
+        return None
+
+    def _resolve_via_date_expression(
+        self,
+        parameter_name: str,
+        raw_value: str,
+        spec: dict[str, Any],
+    ) -> ResolvedParameter | None:
+        """
+        Step 4c: Resolve natural-language date expressions to YYYY-MM-DD.
+
+        Activates when:
+        - spec has format='date' or format='%Y-%m-%d', or
+        - parameter name is a known date field (expiry, date, etc.)
+        """
+        fmt = str(spec.get("format", "")).strip().lower()
+        is_date_format = fmt in ("date", "%y-%m-%d")
+        is_date_name = parameter_name.lower() in self._DATE_PARAM_NAMES
+
+        if not is_date_format and not is_date_name:
+            return None
+
+        resolved_date = self._resolve_relative_date(raw_value)
+        if resolved_date is None:
+            return None
+
+        logger.info(
+            "Date expression: '%s' → '%s' for '%s'",
+            raw_value, resolved_date, parameter_name,
+        )
+        return ResolvedParameter(
+            parameter_name=parameter_name,
+            original_value=raw_value,
+            resolved_value=resolved_date,
+            confidence=0.95,
+            source="date_expression",
         )
 
     def _resolve_via_symbol_suffix(

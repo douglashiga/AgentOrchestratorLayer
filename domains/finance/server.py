@@ -817,6 +817,12 @@ METADATA_OVERRIDES = {
         },
         "parameter_specs": {
             "symbol": dict(SYMBOL_PARAM_SPEC),
+            "expiry": {
+                "type": "string",
+                "format": "date",
+                "description": "Option expiry date (YYYY-MM-DD). Accepts relative expressions like 'essa semana', 'next month'.",
+                "examples": ["2026-03-20", "2026-06-19"],
+            },
         },
         "flow": SYMBOL_SEARCH_FLOW,
         "explanation_template": "Option chain for {symbol}.",
@@ -829,6 +835,12 @@ METADATA_OVERRIDES = {
         },
         "parameter_specs": {
             "symbol": dict(SYMBOL_PARAM_SPEC),
+            "expiry": {
+                "type": "string",
+                "format": "date",
+                "description": "Option expiry date (YYYY-MM-DD). Accepts relative expressions.",
+                "examples": ["2026-03-20", "2026-06-19"],
+            },
         },
         "flow": SYMBOL_SEARCH_FLOW,
         "explanation_template": "Option Greeks for {symbol}.",
@@ -1109,7 +1121,7 @@ METADATA_OVERRIDES = {
         "parameter_specs": {
             "symbol": dict(SYMBOL_PARAM_SPEC),
             "strike": {"type": "number", "required": True},
-            "expiry": {"type": "string", "required": True, "examples": ["2025-06-20"]},
+            "expiry": {"type": "string", "required": True, "format": "date", "examples": ["2025-06-20"]},
             "premium": {"type": "number", "required": True},
         },
         "flow": SYMBOL_SEARCH_FLOW,
