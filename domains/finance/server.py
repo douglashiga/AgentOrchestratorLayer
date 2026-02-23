@@ -185,12 +185,84 @@ async def lifespan(app: FastAPI):
         cap_metadata.setdefault("description", cap.get("description", ""))
         mock_registry.register_capability(cap["name"], None, metadata=cap_metadata)
 
-    # Pass symbol_resolver and parameter_resolver to handler
+    # ─── Initialize 3-Tier Architecture ─────────────────────────────
+
+    # Tier 1: Facts (MCP passthrough — always available)
+    from domains.finance.context import ContextResolver
+    from domains.finance.core import StrategyCore
+    from domains.finance.tiers.facts import FactsTier
+
+    context_resolver = ContextResolver()
+    strategy_core = StrategyCore()
+    facts_tier = FactsTier(
+        skill_gateway=skill_gateway,
+        context_resolver=context_resolver,
+        strategy_core=strategy_core,
+        registry=mock_registry,
+    )
+
+    # Tier 2: Calculator (local math + MCP data fetching)
+    from domains.finance.tiers.calculators import CalculatorTier, CalculatorRegistry
+    from domains.finance.calculators.options import register_options_calculators
+    from domains.finance.calculators.finance import register_finance_calculators
+    from domains.finance.calculators.portfolio import register_portfolio_calculators
+
+    calc_registry = CalculatorRegistry()
+    register_options_calculators(calc_registry)
+    register_finance_calculators(calc_registry)
+    register_portfolio_calculators(calc_registry)
+    calculator_tier = CalculatorTier(
+        calculator_registry=calc_registry,
+        skill_gateway=skill_gateway,
+    )
+
+    # Tier 3: Analysis (LLM + skills — optional, requires model_selector)
+    analysis_tier = None
+    model_selector = None
+    try:
+        model_selector_env = os.getenv("MODEL_BASE_URL", "").strip()
+        if model_selector_env:
+            from models.selector import ModelSelector
+            model_selector = ModelSelector()
+
+            from domains.finance.tiers.agents import AnalysisTier
+            from domains.finance.analysis_skills.registry import FinanceSkillRegistry
+            from domains.finance.analysis_skills.stock_analyst import StockAnalystSkill
+            from domains.finance.analysis_skills.options_analyst import OptionsAnalystSkill
+
+            finance_skill_registry = FinanceSkillRegistry()
+            finance_skill_registry.register(StockAnalystSkill(), ["analyze_stock"])
+            finance_skill_registry.register(OptionsAnalystSkill(), ["analyze_options"])
+
+            analysis_tier = AnalysisTier(
+                skill_registry=finance_skill_registry,
+                facts_tier=facts_tier,
+                calculator_tier=calculator_tier,
+                model_selector=model_selector,
+            )
+            logger.info("Analysis tier initialized with %d skills", len(finance_skill_registry.list_skill_names()))
+        else:
+            logger.info("Analysis tier disabled (MODEL_BASE_URL not set)")
+    except Exception as e:
+        logger.warning("Analysis tier initialization failed: %s", e)
+
+    # ─── Initialize Domain Handler with Tiers ─────────────────────
+
     handler = FinanceDomainHandler(
         skill_gateway=skill_gateway,
         registry=mock_registry,
         symbol_resolver=symbol_resolver,
         parameter_resolver=parameter_resolver,
+        model_selector=model_selector,
+        facts_tier=facts_tier,
+        calculator_tier=calculator_tier,
+        analysis_tier=analysis_tier,
+    )
+
+    logger.info(
+        "Finance Server ready — Facts: OK | Calculator: %d functions | Analysis: %s",
+        len(calc_registry.list_capabilities()),
+        "OK" if analysis_tier else "disabled",
     )
 
     yield
@@ -1075,7 +1147,7 @@ METADATA_OVERRIDES = {
         "flow": SYMBOL_SEARCH_FLOW,
         "explanation_template": "Comprehensive analysis for {symbol}.",
     },
-    # ─── Wheel Strategy ────────────────────────────────────────────────
+    # ─── Wheel Strategy (Facts Tier — MCP passthrough) ─────────────────
     "get_wheel_put_candidates": {
         "intent_description": "Find put option candidates for the wheel strategy on a given stock.",
         "intent_hints": {
@@ -1106,26 +1178,26 @@ METADATA_OVERRIDES = {
         "flow": SYMBOL_SEARCH_FLOW,
         "explanation_template": "Wheel put candidates for {symbol}.",
     },
-    "get_wheel_put_return": {
-        "intent_description": "Calculate return for a specific wheel put position.",
+    "calc_put_return": {
+        "tier": "calculator",
+        "intent_description": "Calculate return metrics for a put position (ROC, breakeven, cushion).",
         "intent_hints": {
             "keywords": [
                 "retorno do put", "rendimento put", "quanto vou ganhar",
-                "put return", "wheel return",
+                "put return", "retorno opcao", "option return",
             ],
             "examples": [
-                "qual o retorno do put de nordea strike 120?",
-                "wheel put return for aapl strike 180",
+                "qual o retorno do put de nordea strike 120 com premio 2.50?",
+                "put return for aapl strike 180 premium 3.00",
             ],
         },
         "parameter_specs": {
             "symbol": dict(SYMBOL_PARAM_SPEC),
             "strike": {"type": "number", "required": True},
-            "expiry": {"type": "string", "required": True, "format": "date", "examples": ["2025-06-20"]},
             "premium": {"type": "number", "required": True},
         },
+        "schema": {"required": ["symbol", "strike", "premium"]},
         "flow": SYMBOL_SEARCH_FLOW,
-        "explanation_template": "Wheel put return for {symbol} at strike {params[strike]}.",
     },
     "get_wheel_covered_call_candidates": {
         "intent_description": "Find covered call candidates for the wheel strategy after assignment.",
@@ -1154,30 +1226,29 @@ METADATA_OVERRIDES = {
         "flow": SYMBOL_SEARCH_FLOW,
         "explanation_template": "Covered call candidates for {symbol}.",
     },
-    "get_wheel_contract_capacity": {
-        "intent_description": "Calculate how many wheel contracts you can sell given capital.",
+    "calc_contract_capacity": {
+        "tier": "calculator",
+        "intent_description": "Calculate how many option contracts you can sell given capital and allocation percentage.",
         "intent_hints": {
             "keywords": [
                 "quantos contratos", "capacidade capital", "quanto posso vender",
-                "contract capacity", "capital allocation",
+                "contract capacity", "capital allocation", "quanto do capital",
             ],
             "examples": [
                 "quantos contratos posso vender de nordea com 100000 sek?",
-                "wheel capacity for aapl with 50000 usd",
+                "quantos contratos com 20% dos meus 500000?",
+                "contract capacity for aapl with 50000",
             ],
         },
-        "default_market": "sweden",
         "parameter_specs": {
             "symbol": dict(SYMBOL_PARAM_SPEC),
-            "capital_sek": {"type": "number", "required": True, "description": "Available capital in SEK"},
-            "market": {"type": "string", "default": "sweden"},
+            "capital": {"type": "number", "required": True, "description": "Available capital"},
+            "allocation_pct": {"type": "number", "default": 1.0, "description": "Fraction of capital (0.2 = 20%)"},
             "strike": {"type": "number"},
             "margin_requirement_pct": {"type": "number", "default": 1.0},
-            "cash_buffer_pct": {"type": "number", "default": 0.0},
-            "target_dte": {"type": "integer", "default": 7},
         },
+        "schema": {"required": ["symbol", "capital"]},
         "flow": SYMBOL_SEARCH_FLOW,
-        "explanation_template": "Contract capacity for {symbol} with {params[capital_sek]} SEK.",
     },
     "build_wheel_multi_stock_plan": {
         "intent_description": "Build a diversified wheel strategy plan across multiple stocks.",
@@ -1209,27 +1280,248 @@ METADATA_OVERRIDES = {
         },
         "explanation_template": "Wheel multi-stock plan with {params[capital_sek]} SEK.",
     },
-    "analyze_wheel_put_risk": {
-        "intent_description": "Analyze risk of a wheel put position (downside scenarios).",
+    "calc_put_risk": {
+        "tier": "calculator",
+        "intent_description": "Analyze downside risk scenarios for a put position.",
         "intent_hints": {
             "keywords": [
-                "risco do put", "risco wheel", "analisar risco",
-                "put risk", "wheel risk analysis", "downside risk",
+                "risco do put", "risco opcao", "analisar risco",
+                "put risk", "risk analysis", "downside risk", "cenarios",
             ],
             "examples": [
-                "qual o risco do wheel put na nordea?",
-                "analyze wheel risk for aapl",
+                "qual o risco do put na nordea?",
+                "analyze put risk for aapl",
             ],
         },
-        "default_market": "sweden",
+        "parameter_specs": {
+            "symbol": dict(SYMBOL_PARAM_SPEC),
+            "pct_below_spot": {"type": "number", "default": 5.0, "description": "Percentage below spot for strike"},
+        },
+        "schema": {"required": ["symbol"]},
+        "flow": SYMBOL_SEARCH_FLOW,
+    },
+    # ─── New Options Calculators (Calculator Tier) ───────────────────────
+    "calc_required_premium": {
+        "tier": "calculator",
+        "intent_description": "Calculate required option premium for a target return percentage.",
+        "intent_hints": {
+            "keywords": [
+                "premio necessario", "quanto de premio", "required premium",
+                "target return", "premio minimo", "premium for return",
+            ],
+            "examples": [
+                "quanto de premio preciso para 1.5% no strike 120?",
+                "required premium for 2% return on strike 180",
+            ],
+        },
+        "parameter_specs": {
+            "strike": {"type": "number", "required": True},
+            "target_return_pct": {"type": "number", "required": True},
+            "days_to_expiry": {"type": "integer"},
+        },
+        "schema": {"required": ["strike", "target_return_pct"]},
+    },
+    "calc_income_target": {
+        "tier": "calculator",
+        "intent_description": "Calculate weekly/monthly income targets for a given capital and return goal.",
+        "intent_hints": {
+            "keywords": [
+                "meta mensal", "meta semanal", "quanto ganhar", "income target",
+                "por mes", "por semana", "renda mensal", "weekly income",
+            ],
+            "examples": [
+                "quanto preciso ganhar por semana para ter 2% ao mes com 500000?",
+                "income target for 24% annual with 100000 capital",
+                "quero 1.5% ao mes com 300000, quanto por semana?",
+            ],
+        },
+        "parameter_specs": {
+            "capital": {"type": "number", "required": True},
+            "target_monthly_pct": {"type": "number"},
+            "target_annual_pct": {"type": "number"},
+            "num_contracts": {"type": "integer"},
+        },
+        "schema": {"required": ["capital"]},
+    },
+    "calc_annualized_return": {
+        "tier": "calculator",
+        "intent_description": "Annualize a return from a specific period (e.g., weekly return to annual).",
+        "intent_hints": {
+            "keywords": [
+                "anualizado", "anualizar", "annualized", "por ano",
+                "retorno anual", "yearly return",
+            ],
+            "examples": [
+                "1.2% em 7 dias anualizado da quanto?",
+                "annualize 0.8% weekly return",
+                "quanto da 2% por mes anualizado?",
+            ],
+        },
+        "parameter_specs": {
+            "return_pct": {"type": "number", "required": True},
+            "period_days": {"type": "integer", "required": True},
+            "num_periods": {"type": "integer"},
+        },
+        "schema": {"required": ["return_pct", "period_days"]},
+    },
+    "calc_margin_collateral": {
+        "tier": "calculator",
+        "intent_description": "Calculate total margin or collateral required for option positions.",
+        "intent_hints": {
+            "keywords": [
+                "margem", "colateral", "margin", "collateral",
+                "quanto de margem", "quanto preciso de colateral",
+            ],
+            "examples": [
+                "quanto de colateral para 5 contratos no strike 120?",
+                "margin required for 3 contracts at strike 180",
+            ],
+        },
+        "parameter_specs": {
+            "strike": {"type": "number", "required": True},
+            "num_contracts": {"type": "integer", "default": 1},
+            "margin_pct": {"type": "number", "default": 1.0},
+        },
+        "schema": {"required": ["strike"]},
+    },
+    # ─── Basic Finance Math (Calculator Tier) ────────────────────────────
+    "calc_percentage": {
+        "tier": "calculator",
+        "intent_description": "Basic percentage calculation: X% of Y, or X is what % of Y.",
+        "intent_hints": {
+            "keywords": [
+                "porcentagem", "percentual", "percentage", "quanto e",
+                "qual o percentual", "percent of",
+            ],
+            "examples": [
+                "quanto e 20% de 500000?",
+                "150 e qual porcentagem de 1200?",
+                "what is 15% of 80000?",
+            ],
+        },
+        "parameter_specs": {
+            "value": {"type": "number"},
+            "percentage": {"type": "number"},
+            "part": {"type": "number"},
+            "whole": {"type": "number"},
+        },
+    },
+    "calc_average_cost": {
+        "tier": "calculator",
+        "intent_description": "Calculate weighted average cost basis from multiple purchases.",
+        "intent_hints": {
+            "keywords": [
+                "preco medio", "custo medio", "average cost", "cost basis",
+                "preço médio", "media ponderada",
+            ],
+            "examples": [
+                "comprei 100 a 120 e 50 a 115, qual meu preco medio?",
+                "average cost of 200 shares at 50 and 100 shares at 48",
+            ],
+        },
+        "parameter_specs": {
+            "lots": {"type": "array", "required": True, "description": "List of {quantity, price} dicts"},
+            "premium_received": {"type": "number", "default": 0},
+        },
+        "schema": {"required": ["lots"]},
+    },
+    "calc_compound_growth": {
+        "tier": "calculator",
+        "intent_description": "Calculate compound growth projection with optional periodic contributions.",
+        "intent_hints": {
+            "keywords": [
+                "juros compostos", "crescimento composto", "compound growth",
+                "compound interest", "quanto vira", "projecao",
+            ],
+            "examples": [
+                "se ganho 1.5% por semana, 100000 vira quanto em 1 ano?",
+                "compound 2% monthly on 500000 for 12 months",
+            ],
+        },
+        "parameter_specs": {
+            "principal": {"type": "number", "required": True},
+            "rate_pct": {"type": "number", "required": True},
+            "periods": {"type": "integer", "required": True},
+            "contribution_per_period": {"type": "number", "default": 0},
+        },
+        "schema": {"required": ["principal", "rate_pct", "periods"]},
+    },
+    "calc_risk_reward": {
+        "tier": "calculator",
+        "intent_description": "Calculate Risk/Reward ratio given entry, stop loss, and target price.",
+        "intent_hints": {
+            "keywords": [
+                "risk reward", "risco retorno", "R:R", "ratio risco",
+                "risk:reward", "stop loss target",
+            ],
+            "examples": [
+                "risk reward de entrada 120, stop 115, alvo 135?",
+                "R:R ratio for entry 50, stop 47, target 60",
+            ],
+        },
+        "parameter_specs": {
+            "entry_price": {"type": "number", "required": True},
+            "stop_loss": {"type": "number", "required": True},
+            "target_price": {"type": "number", "required": True},
+        },
+        "schema": {"required": ["entry_price", "stop_loss", "target_price"]},
+    },
+    # ─── Analysis Tier (LLM + Skills) ──────────────────────────────────
+    "analyze_stock": {
+        "tier": "analysis",
+        "intent_description": (
+            "Deep stock analysis using LLM — covers technical, fundamental, risk, "
+            "and comparative analysis. The LLM adapts focus based on the user's question."
+        ),
+        "intent_hints": {
+            "keywords": [
+                "analise tecnica", "análise técnica", "analise fundamentalista",
+                "análise fundamentalista", "analise de risco", "análise de risco",
+                "analise completa", "análise completa", "deep analysis",
+                "quero uma analise", "faca uma analise", "comparar", "compare",
+                "versus", "vs", "qual melhor",
+            ],
+            "examples": [
+                "faca uma analise tecnica da petr4",
+                "analise fundamentalista da vale3",
+                "qual o risco de investir em tsla?",
+                "compare petr4 com vale3",
+            ],
+        },
+        "parameter_specs": {
+            "symbol": dict(SYMBOL_PARAM_SPEC),
+            "symbols": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of symbols to compare (optional)",
+            },
+        },
+        "flow": SYMBOL_SEARCH_FLOW,
+    },
+    "analyze_options": {
+        "tier": "analysis",
+        "intent_description": (
+            "Deep options/derivatives analysis using LLM — covers wheel strategy, "
+            "Greeks, volatility, and strategy construction. Adapts focus based on the question."
+        ),
+        "intent_hints": {
+            "keywords": [
+                "analise de opcoes", "análise de opções", "analise wheel",
+                "análise wheel", "analise derivativos", "derivatives analysis",
+                "wheel strategy analysis", "greeks analysis",
+                "analise completa opcoes", "quero analise de opcoes",
+            ],
+            "examples": [
+                "faca uma analise wheel da nordea",
+                "analise das opcoes da aapl",
+                "wheel strategy analysis for nda-se.st",
+            ],
+        },
         "parameter_specs": {
             "symbol": dict(SYMBOL_PARAM_SPEC),
             "market": {"type": "string", "default": "sweden"},
-            "pct_below_spot": {"type": "number", "default": 5.0, "description": "Percentage below spot to analyze"},
-            "target_dte": {"type": "integer", "default": 7},
         },
         "flow": SYMBOL_SEARCH_FLOW,
-        "explanation_template": "Wheel put risk analysis for {symbol}.",
     },
 }
 
@@ -2062,6 +2354,72 @@ def get_manifest():
                     "examples": [
                         "qual o risco do wheel put na nordea?",
                         "analyze wheel risk for aapl",
+                    ],
+                },
+                "entities_schema": {
+                    "symbol_text": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Stock symbol or company name",
+                    },
+                    "market_text": {
+                        "type": "string",
+                        "description": "Market as mentioned by user",
+                    },
+                },
+            },
+            # ─── Analysis Goals (LLM Tier) ─────────────────────────────
+            {
+                "goal": "ANALYZE_STOCK",
+                "description": "Deep stock analysis (technical, fundamental, risk, comparison) using LLM",
+                "capabilities": ["analyze_stock"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "analise tecnica", "análise técnica",
+                        "analise fundamentalista", "análise fundamentalista",
+                        "analise de risco", "análise de risco",
+                        "analise completa", "análise completa",
+                        "deep analysis", "quero uma analise",
+                        "faca uma analise", "comparar", "compare",
+                        "versus", "vs", "qual melhor",
+                    ],
+                    "examples": [
+                        "faca uma analise tecnica da petr4",
+                        "analise fundamentalista da vale3",
+                        "qual o risco de investir em tsla?",
+                        "compare petr4 com vale3",
+                    ],
+                },
+                "entities_schema": {
+                    "symbol_text": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Stock symbol or company name",
+                    },
+                    "symbols_text": {
+                        "type": "array",
+                        "description": "Multiple symbols for comparison (optional)",
+                    },
+                },
+            },
+            {
+                "goal": "ANALYZE_OPTIONS",
+                "description": "Deep options/derivatives analysis (wheel, greeks, strategies) using LLM",
+                "capabilities": ["analyze_options"],
+                "requires_domains": [],
+                "hints": {
+                    "keywords": [
+                        "analise de opcoes", "análise de opções",
+                        "analise wheel", "análise wheel",
+                        "analise derivativos", "derivatives analysis",
+                        "wheel strategy analysis", "greeks analysis",
+                        "analise completa opcoes",
+                    ],
+                    "examples": [
+                        "faca uma analise wheel da nordea",
+                        "analise das opcoes da aapl",
+                        "derivatives analysis for petr4",
                     ],
                 },
                 "entities_schema": {

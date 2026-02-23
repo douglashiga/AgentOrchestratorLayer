@@ -3,10 +3,11 @@ Finance Domain Handler.
 
 Responsibility:
 - Orchestrate internally: Context Resolver → Skill Gateway → Strategy Core
+- Dispatch to appropriate Tier (Facts / Calculator / Analysis)
 - Return Decision
 
 Prohibitions:
-- No LLM usage
+- No direct LLM usage (delegated to Analysis Tier)
 - No bypassing gateway
 - No global state
 """
@@ -36,12 +37,25 @@ from domains.finance.schemas import (
     MostActiveInput, OversoldOverboughtInput,
     AnalystRecommendationsInput, TechnicalAnalysisInput,
     NewsSentimentInput, ComprehensiveStockInfoInput,
-    WheelPutCandidatesInput, WheelPutReturnInput,
-    WheelCoveredCallCandidatesInput, WheelContractCapacityInput,
-    WheelMultiStockPlanInput, WheelPutRiskInput,
+    # Wheel (Facts tier — MCP passthrough)
+    WheelPutCandidatesInput, WheelCoveredCallCandidatesInput,
+    WheelMultiStockPlanInput,
+    # Generic options calculators
+    PutReturnInput, ContractCapacityInput, PutRiskInput,
+    RequiredPremiumInput, IncomeTargetInput, AnnualizedReturnInput,
+    MarginCollateralInput,
+    # Basic finance math
+    PercentageInput, AverageCostInput, CompoundGrowthInput,
+    RiskRewardInput,
 )
 from pydantic import ValidationError
 from typing import get_type_hints
+
+# Tier imports
+from domains.finance.tiers.base import Tier, TierContext
+from domains.finance.tiers.facts import FactsTier
+from domains.finance.tiers.calculators import CalculatorTier
+from domains.finance.tiers.agents import AnalysisTier
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +71,25 @@ class FinanceDomainHandler:
         parameter_resolver: ParameterResolver | None = None,
         model_selector: Any = None,
         finance_server_url: str = "http://localhost:8001",
+        # Tier processors (optional — injected from server.py lifespan)
+        facts_tier: FactsTier | None = None,
+        calculator_tier: CalculatorTier | None = None,
+        analysis_tier: AnalysisTier | None = None,
     ):
         self.context_resolver = ContextResolver()
         self.strategy_core = StrategyCore()
         self.skill_gateway = skill_gateway
         self.registry = registry
+
+        # Initialize tier processors
+        self._facts_tier = facts_tier or FactsTier(
+            skill_gateway=skill_gateway,
+            context_resolver=self.context_resolver,
+            strategy_core=self.strategy_core,
+            registry=registry,
+        )
+        self._calculator_tier = calculator_tier
+        self._analysis_tier = analysis_tier
 
         # Initialize symbol resolver (metadata-driven aliases with LLM fallback)
         if symbol_resolver:
@@ -168,75 +196,139 @@ class FinanceDomainHandler:
     # ─── Typed Capabilities ──────────────────────────────────────────
 
     async def get_top_gainers(self, intent: IntentOutput | ExecutionIntent, params: TopGainersInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
+        return await self._dispatch_to_tier(intent, params.model_dump())
 
     async def get_top_losers(self, intent: IntentOutput | ExecutionIntent, params: TopLosersInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
+        return await self._dispatch_to_tier(intent, params.model_dump())
 
     async def get_stock_price(self, intent: IntentOutput | ExecutionIntent, params: StockPriceInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
+        return await self._dispatch_to_tier(intent, params.model_dump())
 
     async def get_historical_data(self, intent: IntentOutput | ExecutionIntent, params: HistoricalDataInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
+        return await self._dispatch_to_tier(intent, params.model_dump())
 
     async def get_stock_screener(self, intent: IntentOutput | ExecutionIntent, params: StockScreenerInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
+        return await self._dispatch_to_tier(intent, params.model_dump())
 
     async def get_technical_signals(self, intent: IntentOutput | ExecutionIntent, params: TechnicalSignalsInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
+        return await self._dispatch_to_tier(intent, params.model_dump())
 
     async def get_dividend_history(self, intent: IntentOutput | ExecutionIntent, params: DividendHistoryInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
+        return await self._dispatch_to_tier(intent, params.model_dump())
 
     async def get_company_profile(self, intent: IntentOutput | ExecutionIntent, params: StockPriceInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
+        return await self._dispatch_to_tier(intent, params.model_dump())
 
     # ─── Expanded Screeners ───────────────────────────────────────────
 
     async def get_most_active_stocks(self, intent: IntentOutput | ExecutionIntent, params: MostActiveInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
+        return await self._dispatch_to_tier(intent, params.model_dump())
 
     async def get_oversold_stocks(self, intent: IntentOutput | ExecutionIntent, params: OversoldOverboughtInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
+        return await self._dispatch_to_tier(intent, params.model_dump())
 
     async def get_overbought_stocks(self, intent: IntentOutput | ExecutionIntent, params: OversoldOverboughtInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
+        return await self._dispatch_to_tier(intent, params.model_dump())
 
     # ─── Fundamentals Intelligence ────────────────────────────────────
 
     async def get_analyst_recommendations(self, intent: IntentOutput | ExecutionIntent, params: AnalystRecommendationsInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
+        return await self._dispatch_to_tier(intent, params.model_dump())
 
     async def get_technical_analysis(self, intent: IntentOutput | ExecutionIntent, params: TechnicalAnalysisInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
+        return await self._dispatch_to_tier(intent, params.model_dump())
 
     async def get_news_sentiment(self, intent: IntentOutput | ExecutionIntent, params: NewsSentimentInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
+        return await self._dispatch_to_tier(intent, params.model_dump())
 
     async def get_comprehensive_stock_info(self, intent: IntentOutput | ExecutionIntent, params: ComprehensiveStockInfoInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
+        return await self._dispatch_to_tier(intent, params.model_dump())
 
-    # ─── Wheel Strategy ───────────────────────────────────────────────
+    # ─── Wheel Strategy (Facts tier — MCP passthrough) ──────────────
 
     async def get_wheel_put_candidates(self, intent: IntentOutput | ExecutionIntent, params: WheelPutCandidatesInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
-
-    async def get_wheel_put_return(self, intent: IntentOutput | ExecutionIntent, params: WheelPutReturnInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
+        return await self._dispatch_to_tier(intent, params.model_dump())
 
     async def get_wheel_covered_call_candidates(self, intent: IntentOutput | ExecutionIntent, params: WheelCoveredCallCandidatesInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
-
-    async def get_wheel_contract_capacity(self, intent: IntentOutput | ExecutionIntent, params: WheelContractCapacityInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
+        return await self._dispatch_to_tier(intent, params.model_dump())
 
     async def build_wheel_multi_stock_plan(self, intent: IntentOutput | ExecutionIntent, params: WheelMultiStockPlanInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
+        return await self._dispatch_to_tier(intent, params.model_dump())
 
-    async def analyze_wheel_put_risk(self, intent: IntentOutput | ExecutionIntent, params: WheelPutRiskInput) -> DomainOutput:
-        return await self._run_pipeline(intent, params.model_dump())
+    # ─── Options Calculators (Calculator tier — local math) ───────
 
-    # ─── Unified Execution Pipeline ──────────────────────────────────
+    async def calc_put_return(self, intent: IntentOutput | ExecutionIntent, params: PutReturnInput) -> DomainOutput:
+        return await self._dispatch_to_tier(intent, params.model_dump())
+
+    async def calc_contract_capacity(self, intent: IntentOutput | ExecutionIntent, params: ContractCapacityInput) -> DomainOutput:
+        return await self._dispatch_to_tier(intent, params.model_dump())
+
+    async def calc_put_risk(self, intent: IntentOutput | ExecutionIntent, params: PutRiskInput) -> DomainOutput:
+        return await self._dispatch_to_tier(intent, params.model_dump())
+
+    async def calc_required_premium(self, intent: IntentOutput | ExecutionIntent, params: RequiredPremiumInput) -> DomainOutput:
+        return await self._dispatch_to_tier(intent, params.model_dump())
+
+    async def calc_income_target(self, intent: IntentOutput | ExecutionIntent, params: IncomeTargetInput) -> DomainOutput:
+        return await self._dispatch_to_tier(intent, params.model_dump())
+
+    async def calc_annualized_return(self, intent: IntentOutput | ExecutionIntent, params: AnnualizedReturnInput) -> DomainOutput:
+        return await self._dispatch_to_tier(intent, params.model_dump())
+
+    async def calc_margin_collateral(self, intent: IntentOutput | ExecutionIntent, params: MarginCollateralInput) -> DomainOutput:
+        return await self._dispatch_to_tier(intent, params.model_dump())
+
+    # ─── Basic Finance Math (Calculator tier — local math) ────────
+
+    async def calc_percentage(self, intent: IntentOutput | ExecutionIntent, params: PercentageInput) -> DomainOutput:
+        return await self._dispatch_to_tier(intent, params.model_dump())
+
+    async def calc_average_cost(self, intent: IntentOutput | ExecutionIntent, params: AverageCostInput) -> DomainOutput:
+        return await self._dispatch_to_tier(intent, params.model_dump())
+
+    async def calc_compound_growth(self, intent: IntentOutput | ExecutionIntent, params: CompoundGrowthInput) -> DomainOutput:
+        return await self._dispatch_to_tier(intent, params.model_dump())
+
+    async def calc_risk_reward(self, intent: IntentOutput | ExecutionIntent, params: RiskRewardInput) -> DomainOutput:
+        return await self._dispatch_to_tier(intent, params.model_dump())
+
+    # ─── Tier Dispatch ─────────────────────────────────────────────
+
+    async def _dispatch_to_tier(self, intent: IntentOutput | ExecutionIntent, params: dict) -> DomainOutput:
+        """
+        Route execution to the appropriate tier based on capability metadata.
+
+        Tier resolution:
+        1. Check metadata["tier"] for explicit tier assignment
+        2. Default to "facts" tier (backward-compatible)
+        3. Graceful fallback: if assigned tier is not configured, use facts
+        """
+        metadata = self._get_capability_metadata(intent.capability)
+        tier_name = metadata.get("tier", "facts")
+
+        context = TierContext(
+            intent=intent if isinstance(intent, ExecutionIntent) else intent.to_execution_intent(intent.goal),
+            params=params,
+            metadata=metadata,
+            original_query=getattr(intent, "original_query", ""),
+        )
+
+        if tier_name == Tier.CALCULATOR and self._calculator_tier:
+            logger.info("Dispatching %s to Calculator tier", intent.capability)
+            return await self._calculator_tier.process(context)
+        elif tier_name == Tier.ANALYSIS and self._analysis_tier:
+            logger.info("Dispatching %s to Analysis tier", intent.capability)
+            return await self._analysis_tier.process(context)
+        else:
+            if tier_name not in (Tier.FACTS, "facts") and tier_name in (Tier.CALCULATOR, Tier.ANALYSIS):
+                logger.warning(
+                    "Tier '%s' not configured for %s — falling back to Facts",
+                    tier_name,
+                    intent.capability,
+                )
+            return await self._facts_tier.process(context)
+
+    # ─── Unified Execution Pipeline (Legacy — kept for compatibility) ─
 
     async def _run_pipeline(self, intent: IntentOutput | ExecutionIntent, params: dict) -> DomainOutput:
         """
@@ -468,8 +560,8 @@ class FinanceDomainHandler:
             
         # For generic execution, run manual metadata checks that Pydantic would have caught
         # (Legacy clarification logic could go here if we wanted to keep purely string-based checks)
-        
-        return await self._run_pipeline(intent, resolved_params)
+
+        return await self._dispatch_to_tier(intent, resolved_params)
 
     # _resolve_parameters removed — logic absorbed by ParameterResolver
     # (defaults are applied by DefaultParameterSubResolver and _apply_pre_flow fallback)

@@ -79,10 +79,78 @@ class WheelPutCandidatesInput(BaseModel):
     require_liquidity: bool = Field(default=True, description="Filter for liquid contracts only")
 
 class WheelPutReturnInput(BaseModel):
+    """Legacy alias — use PutReturnInput instead."""
     symbol: str = Field(..., description="Stock symbol")
     strike: float = Field(..., description="Put strike price")
     expiry: str = Field(..., description="Expiry date (YYYY-MM-DD)")
     premium: float = Field(..., description="Premium received per share")
+
+# ─── Generic Options Math ─────────────────────────────────────────────────────
+
+class PutReturnInput(BaseModel):
+    symbol: str = Field(..., description="Stock symbol (e.g. AAPL, NDA.ST)")
+    strike: float = Field(..., description="Put strike price")
+    premium: float = Field(..., description="Premium received per share")
+    lot_size: int = Field(default=100, description="Shares per contract")
+
+class ContractCapacityInput(BaseModel):
+    symbol: str = Field(..., description="Stock symbol")
+    capital: float = Field(..., description="Available capital")
+    allocation_pct: float = Field(default=1.0, description="Fraction of capital to use (0.2 = 20%)")
+    strike: float | None = Field(default=None, description="Specific strike (optional, defaults to ~5% OTM)")
+    margin_requirement_pct: float = Field(default=1.0, description="Margin requirement fraction")
+    lot_size: int = Field(default=100, description="Shares per contract")
+
+class PutRiskInput(BaseModel):
+    symbol: str = Field(..., description="Stock symbol")
+    pct_below_spot: float = Field(default=5.0, description="Percentage below spot for strike calculation")
+    lot_size: int = Field(default=100, description="Shares per contract")
+
+class RequiredPremiumInput(BaseModel):
+    strike: float = Field(..., description="Strike price")
+    target_return_pct: float = Field(..., description="Target return on collateral (%)")
+    lot_size: int = Field(default=100, description="Shares per contract")
+    days_to_expiry: int | None = Field(default=None, description="DTE for annualization")
+
+class IncomeTargetInput(BaseModel):
+    capital: float = Field(..., description="Total capital available")
+    target_monthly_pct: float | None = Field(default=None, description="Target monthly return (%)")
+    target_annual_pct: float | None = Field(default=None, description="Target annual return (%)")
+    num_contracts: int | None = Field(default=None, description="Number of contracts for per-contract breakdown")
+
+class AnnualizedReturnInput(BaseModel):
+    return_pct: float = Field(..., description="Period return (%)")
+    period_days: int = Field(..., description="Period length in days")
+    num_periods: int | None = Field(default=None, description="Number of periods for cumulative calc")
+
+class MarginCollateralInput(BaseModel):
+    strike: float = Field(..., description="Strike price")
+    lot_size: int = Field(default=100, description="Shares per contract")
+    num_contracts: int = Field(default=1, description="Number of contracts")
+    margin_pct: float = Field(default=1.0, description="1.0=cash-secured, 0.2=margin")
+
+# ─── Basic Finance Math ───────────────────────────────────────────────────────
+
+class PercentageInput(BaseModel):
+    value: float | None = Field(default=None, description="Base value (for 'X% of Y')")
+    percentage: float | None = Field(default=None, description="Percentage to apply")
+    part: float | None = Field(default=None, description="Part value (for 'X is what % of Y')")
+    whole: float | None = Field(default=None, description="Whole value")
+
+class AverageCostInput(BaseModel):
+    lots: list[dict] = Field(..., description="List of {quantity, price} dicts")
+    premium_received: float = Field(default=0, description="Total premium received (adjusts cost basis)")
+
+class CompoundGrowthInput(BaseModel):
+    principal: float = Field(..., description="Initial capital")
+    rate_pct: float = Field(..., description="Return per period (%)")
+    periods: int = Field(..., description="Number of periods")
+    contribution_per_period: float = Field(default=0, description="Additional contribution each period")
+
+class RiskRewardInput(BaseModel):
+    entry_price: float = Field(..., description="Entry price")
+    stop_loss: float = Field(..., description="Stop loss price")
+    target_price: float = Field(..., description="Target/take profit price")
 
 class WheelCoveredCallCandidatesInput(BaseModel):
     symbol: str = Field(..., description="Stock symbol (must be assigned/owned)")
